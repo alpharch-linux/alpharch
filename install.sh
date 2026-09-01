@@ -158,11 +158,19 @@ if command -v hyprctl >/dev/null 2>&1; then
   if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
     _hypr_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr"
     if [[ -d "$_hypr_run" ]]; then
-      for _sig in $(ls -t "$_hypr_run" 2>/dev/null); do
-        [[ -S "$_hypr_run/$_sig/.socket.sock" ]] || continue
-        export HYPRLAND_INSTANCE_SIGNATURE="$_sig"
-        break
+      # Glob the sockets rather than iterating `ls -t` (SC2045). `ls -t` was
+      # there to prefer the newest instance when stale signature dirs are left
+      # over from earlier sessions; -nt keeps that without parsing ls. An
+      # unmatched glob stays literal, and the -S test rejects it.
+      _newest=""
+      for _sock in "$_hypr_run"/*/.socket.sock; do
+        [[ -S "$_sock" ]] || continue
+        if [[ -z "$_newest" ]] || [[ "$_sock" -nt "$_newest" ]]; then _newest="$_sock"; fi
       done
+      if [[ -n "$_newest" ]]; then
+        _sig="${_newest%/.socket.sock}"
+        export HYPRLAND_INSTANCE_SIGNATURE="${_sig##*/}"
+      fi
     fi
   fi
   if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && [[ "$(hyprctl reload 2>&1)" == "ok" ]]; then
