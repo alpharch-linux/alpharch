@@ -77,19 +77,25 @@ done_ "$(ls "$DEST"/bin | tr '\n' ' ')"
 step "wiring SUPER+ALT bindings into $HYPR_BINDINGS"
 mkdir -p "$(dirname "$HYPR_BINDINGS")"
 touch "$HYPR_BINDINGS"
-# strip any previous alpharch block, then append fresh
+# Strip any previous alpharch block, then append fresh. The trailing-blank pass
+# matters: the separator line below sits OUTSIDE the markers, so without it every
+# re-install leaks one more blank line into the user's bindings.lua.
 awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
   $0 == b {skip=1; next}
   $0 == e {skip=0; next}
   !skip {print}
-' "$HYPR_BINDINGS" > "$HYPR_BINDINGS.tmp" && mv "$HYPR_BINDINGS.tmp" "$HYPR_BINDINGS"
+' "$HYPR_BINDINGS" | awk '
+  {l[NR] = $0}
+  END {for (i = 1; i <= NR; i++) if (l[i] ~ /[^[:space:]]/) last = i
+       for (i = 1; i <= last; i++) print l[i]}
+' > "$HYPR_BINDINGS.tmp" && mv "$HYPR_BINDINGS.tmp" "$HYPR_BINDINGS"
 {
   echo ""
   echo "$MARK_BEGIN"
   cat "$DEST/config/hypr/bindings-alpharch.lua"
   echo "$MARK_END"
 } >> "$HYPR_BINDINGS"
-done_ "bindings installed (SUPER+ALT+T/O/M/B/J/C/D)"
+done_ "bindings installed (SUPER+ALT+A/T/O/M/B/J/N/D)"
 
 # ── 4. The Pit theme ───────────────────────────────────────────────────────
 if [[ "$NO_THEME" == 0 ]]; then
@@ -100,7 +106,7 @@ if [[ "$NO_THEME" == 0 ]]; then
     rm -rf "${THEMES_DIR:?}/$th"
     cp -r "$DEST/themes/$th" "$THEMES_DIR/$th"
   done
-  done_ "themes at $THEMES_DIR/{pit,pit-light} — flip anytime with SUPER+ALT+L"
+  done_ "themes at $THEMES_DIR/{pit,pit-light} — flip anytime with SUPER+ALT+I"
   if command -v omarchy-theme-set >/dev/null 2>&1; then
     printf '%bapply now:  omarchy-theme-set pit   (or pit-light)%b\n' "$DIM" "$R"
   fi
@@ -145,8 +151,25 @@ fi
 done_ "config.toml + calendar.txt (edit freely — installer never overwrites them)"
 
 # ── 7. reload ──────────────────────────────────────────────────────────────
-if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 2>&1; then
-  { hyprctl reload >/dev/null 2>&1 && done_ "Hyprland reloaded — bindings are live"; } || true
+if command -v hyprctl >/dev/null 2>&1; then
+  # A reload here is what makes the block live. If we were launched from a shell
+  # without HYPRLAND_INSTANCE_SIGNATURE (tty, ssh, an editor's task runner), find
+  # the running instance ourselves instead of silently skipping the reload.
+  if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    _hypr_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr"
+    if [[ -d "$_hypr_run" ]]; then
+      for _sig in $(ls -t "$_hypr_run" 2>/dev/null); do
+        [[ -S "$_hypr_run/$_sig/.socket.sock" ]] || continue
+        export HYPRLAND_INSTANCE_SIGNATURE="$_sig"
+        break
+      done
+    fi
+  fi
+  if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && [[ "$(hyprctl reload 2>&1)" == "ok" ]]; then
+    done_ "Hyprland reloaded — bindings are live"
+  else
+    printf '%bcould not reach a running Hyprland — run  hyprctl reload  to activate the bindings.%b\n' "$DIM" "$R"
+  fi
 fi
 
 echo
@@ -159,7 +182,7 @@ say "  alpharch doctor     check every dependency and feed"
 say "  SUPER+ALT+A         The Line — type 'btc heat' and go"
 say "  SUPER+ALT+T         the desk, across all your monitors"
 if [[ "$NO_THEME" == 0 ]]; then
-  say "  omarchy-theme-set pit    put on The Pit (SUPER+ALT+L flips light/dark)"
+  say "  omarchy-theme-set pit    put on The Pit (SUPER+ALT+I flips light/dark)"
 fi
 say "  alpharch-waybar setup    optional bar ticker"
 say ""

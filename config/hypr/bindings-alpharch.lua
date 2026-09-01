@@ -17,7 +17,7 @@ o.bind("SUPER + ALT + E", "Depth ladder (DOM)", "omarchy-launch-terminal trade-f
 o.bind("SUPER + ALT + H", "Liquidity heatmap", "omarchy-launch-terminal trade-flow '' heat")
 
 -- The flow canvas: the two worlds — candles into the liquidity fog. Real pixels.
-o.bind("SUPER + ALT + G", "Flow canvas", "alphad --canvas")
+o.bind("SUPER + ALT + V", "Flow canvas", "alphad --canvas")
 
 -- Options flow (deribit, free public data).
 o.bind("SUPER + ALT + P", "Options flow", "omarchy-launch-terminal alphaopt")
@@ -31,10 +31,10 @@ o.bind("SUPER + ALT + B", "Morning brief", "omarchy-launch-terminal bash -c 'tra
 
 -- Journal: today's entry, and instant chart capture into it.
 o.bind("SUPER + ALT + J", "Journal (today)", "omarchy-launch-terminal trade-journal today")
-o.bind("SUPER + ALT + C", "Journal capture", "trade-journal capture")
+o.bind("SUPER + ALT + N", "Journal capture", "trade-journal capture")
 
 -- Focus: the anti-tilt switch. Mutes notifications while you read the tape.
 o.bind("SUPER + ALT + D", "Focus (do not disturb)", "trade-focus")
 
 -- The shade: flip the whole OS between The Pit and the white prospectus.
-o.bind("SUPER + ALT + L", "Light/dark flip", "trade-shade")
+o.bind("SUPER + ALT + I", "Light/dark flip", "trade-shade")

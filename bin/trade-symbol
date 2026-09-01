@@ -6,7 +6,8 @@
 #   trade-symbol            pick from the catalog
 #   trade-symbol BTC-USD    jump straight to a symbol
 
-source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+SELF="$(readlink -f "$0")"
+source "$(dirname "$SELF")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
 # The catalog. Futures front months are illustrative labels; crypto is live.
@@ -37,6 +38,10 @@ EOF
 pick() {
   if have fuzzel; then
     catalog | fuzzel --dmenu -p "market ❯ " -l 14 2>/dev/null
+  elif no_tty && in_hypr; then
+    # SUPER+ALT+M with no fuzzel: the picker needs a window of its own.
+    reexec_in_terminal "$SELF" || { err "install fuzzel (or a terminal) for the picker"; exit 1; }
+    exit 0
   elif have fzf; then
     catalog | fzf --prompt="market ❯ " --height=40% --reverse
   else

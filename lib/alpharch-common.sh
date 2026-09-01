@@ -78,6 +78,86 @@ cfg() {
 # is Hyprland actually running? (commands degrade gracefully if not)
 in_hypr() { [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && have hyprctl; }
 
+# Launched from a keybinding rather than a shell: Hyprland's exec dispatcher
+# gives us no controlling terminal, so a TUI picker (fzf) has nowhere to draw
+# and dies without a sound. Pickers use this to know they must open a window.
+#
+# Test the controlling terminal, NOT -t 0/-t 1: these helpers run inside $(...),
+# where stdout is always a pipe, and a -t 1 test would report "no terminal" even
+# in a real terminal — re-exec'ing forever. fzf draws on /dev/tty anyway.
+no_tty() { ! : 2>/dev/null >/dev/null </dev/tty; }
+
+# ── hyprctl dispatch, both dialects ────────────────────────────────────────
+# Hyprland 0.5x with a Lua config parses `hyprctl dispatch` arguments as Lua:
+# the legacy string form (`dispatch exec "[workspace 2 silent] cmd"`) is a
+# syntax error there, and fails silently behind >/dev/null. Probe the running
+# compositor once, then speak whichever dialect it wants.
+_ALPHARCH_HYPR_LUA=""
+hypr_lua_dispatch() {
+  if [[ -z "$_ALPHARCH_HYPR_LUA" ]]; then
+    if hyprctl dispatch 'hl.dsp.no_op()' 2>&1 | grep -qx 'ok'; then
+      _ALPHARCH_HYPR_LUA=1
+    else
+      _ALPHARCH_HYPR_LUA=0
+    fi
+  fi
+  [[ "$_ALPHARCH_HYPR_LUA" == 1 ]]
+}
+
+# quote a shell string for embedding in a Lua "..." literal
+lua_quote() { local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "$v"; }
+
+# focus workspace <id>
+hypr_workspace() {
+  in_hypr || return 0
+  if hypr_lua_dispatch; then
+    hyprctl dispatch "hl.dsp.focus({ workspace = \"$(lua_quote "$1")\" })" >/dev/null 2>&1
+  else
+    hyprctl dispatch workspace "$1" >/dev/null 2>&1
+  fi
+}
+
+# launch <cmd...> onto workspace <id> without stealing focus
+hypr_exec_on_workspace() {
+  in_hypr || return 0
+  local ws="$1"; shift
+  if hypr_lua_dispatch; then
+    hyprctl dispatch \
+      "hl.dsp.exec_cmd(\"$(lua_quote "$*")\", { workspace = \"$(lua_quote "$ws") silent\" })" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch exec "[workspace $ws silent] $*" >/dev/null 2>&1
+  fi
+}
+
+# move workspace <id> onto monitor <name>
+hypr_workspace_to_monitor() {
+  in_hypr || return 0
+  if hypr_lua_dispatch; then
+    hyprctl dispatch \
+      "hl.dsp.workspace.move({ workspace = \"$(lua_quote "$1")\", monitor = \"$(lua_quote "$2")\" })" \
+      >/dev/null 2>&1
+  else
+    hyprctl dispatch moveworkspacetomonitor "$1" "$2" >/dev/null 2>&1
+  fi
+}
+
+# Re-run this script inside a terminal window. Used by the pickers when fuzzel
+# is absent, so fzf gets a tty instead of failing invisibly behind a keybind.
+# ALPHARCH_REEXEC is a hard stop: the child can never re-exec a grandchild, so a
+# misdetected terminal costs one stray window instead of a fork bomb.
+reexec_in_terminal() {
+  [[ -n "${ALPHARCH_REEXEC:-}" ]] && return 1
+  local self="$1"; shift
+  export ALPHARCH_REEXEC=1
+  if have omarchy-launch-terminal; then omarchy-launch-terminal "$self" "$@"
+  elif have alacritty; then setsid -f alacritty -e "$self" "$@" >/dev/null 2>&1
+  elif have ghostty;   then setsid -f ghostty   -e "$self" "$@" >/dev/null 2>&1
+  elif have foot;      then setsid -f foot         "$self" "$@" >/dev/null 2>&1
+  elif have kitty;     then setsid -f kitty        "$self" "$@" >/dev/null 2>&1
+  else return 1; fi
+}
+
 # notify through the desktop if possible, else stderr
 notify() {
   local title="$1" body="${2:-}"

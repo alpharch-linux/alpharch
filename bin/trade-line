@@ -14,7 +14,8 @@
 #
 # Anything you type that isn't in the list still parses: SYMBOL [FUNCTION].
 
-source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+SELF="$(readlink -f "$0")"
+source "$(dirname "$SELF")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
 TERM_LAUNCH() {
@@ -53,10 +54,14 @@ EOF
 pick() {
   if have fuzzel && in_hypr; then
     catalog | fuzzel --dmenu -p "❯ " -l 20 --width 62 2>/dev/null
-  elif have fzf; then
+  elif have fzf && ! no_tty; then
     catalog | fzf --prompt="❯ " --height=50% --reverse --print-query | tail -1
+  elif have fzf && in_hypr; then
+    # SUPER+ALT+A with no fuzzel installed: fzf needs a window of its own.
+    reexec_in_terminal "$SELF" || { err "install fuzzel (or a terminal) for The Line"; exit 1; }
+    exit 0
   else
-    err "trade-line needs fuzzel (in Hyprland) or fzf"; exit 1
+    err "trade-line needs fuzzel (in Hyprland) or fzf — sudo pacman -S fuzzel"; exit 1
   fi
 }
 

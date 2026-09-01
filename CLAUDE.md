@@ -57,7 +57,7 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
 - **Theme system:** every tool reads the ACTIVE Omarchy theme palette at launch
   (~/.local/state/omarchy/current/theme/colors.toml; shell via
   omarchy-theme-color). House themes: `pit` (dark) and `pit-light` (the paper
-  prospectus). SUPER+ALT+L flips. ALPHARCH_NO_THEME=1 forces Pit.
+  prospectus). SUPER+ALT+I flips. ALPHARCH_NO_THEME=1 forces Pit.
 - Keybinds live ONLY between the `-- ALPHARCH BEGIN/END` markers appended to
   ~/.config/hypr/bindings.lua (o.bind pattern). install.sh/uninstall.sh manage
   that block idempotently. SUPER+ALT is the trading layer.

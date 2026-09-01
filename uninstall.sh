@@ -15,11 +15,17 @@ done_() { printf '%b✓ %s%b\n' "$UP" "$*" "$R"; }
 
 # 1. bindings block out
 if [[ -f "$HYPR_BINDINGS" ]]; then
+  # Second pass drops the blank separator install.sh appends ahead of the
+  # markers, so the file comes back exactly as Alpharch found it.
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
     $0 == b {skip=1; next}
     $0 == e {skip=0; next}
     !skip {print}
-  ' "$HYPR_BINDINGS" > "$HYPR_BINDINGS.tmp" && mv "$HYPR_BINDINGS.tmp" "$HYPR_BINDINGS"
+  ' "$HYPR_BINDINGS" | awk '
+    {l[NR] = $0}
+    END {for (i = 1; i <= NR; i++) if (l[i] ~ /[^[:space:]]/) last = i
+         for (i = 1; i <= last; i++) print l[i]}
+  ' > "$HYPR_BINDINGS.tmp" && mv "$HYPR_BINDINGS.tmp" "$HYPR_BINDINGS"
   done_ "bindings removed"
 fi
 

@@ -69,8 +69,21 @@ cfg_desk() {
 }
 
 monitors() { # newline list of monitor names, in Hyprland order
-  in_hypr && hyprctl -j monitors 2>/dev/null \
-    | grep -oE '"name": *"[^"]*"' | cut -d'"' -f4
+  in_hypr || return 0
+  # Parse the JSON properly. `hyprctl -j monitors` nests activeWorkspace.name
+  # and specialWorkspace.name inside each monitor, so a flat grep for "name"
+  # invents monitors that do not exist ("1", "") and scatters the desk onto them.
+  if have jq; then
+    hyprctl -j monitors 2>/dev/null | jq -r '.[].name'
+  elif have python3; then
+    hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys
+try:
+    print("\n".join(m["name"] for m in json.load(sys.stdin)))
+except Exception:
+    pass'
+  else
+    hyprctl monitors 2>/dev/null | awk '/^Monitor /{print $2}'
+  fi
 }
 
 open_desk() {
@@ -92,10 +105,10 @@ open_desk() {
     printf '  %bws %s · %-8s%b' "${PIT_AMBER}" "$ws" "${name:-—}" "${PIT_RESET}"
     if in_hypr; then
       if (( n_mon > 1 )) && [[ -n "${mons[$mon_idx]:-}" ]]; then
-        hyprctl dispatch moveworkspacetomonitor "$ws" "${mons[$mon_idx]}" >/dev/null 2>&1
+        hypr_workspace_to_monitor "$ws" "${mons[$mon_idx]}"
         printf '%b → %s%b' "${PIT_FAINT}" "${mons[$mon_idx]}" "${PIT_RESET}"
       fi
-      hyprctl dispatch exec "[workspace $ws silent] $run" >/dev/null 2>&1
+      hypr_exec_on_workspace "$ws" "$run"
       printf '\n'; sleep 0.2
     else
       printf '\n    %b(dry run) %s%b\n' "${PIT_FAINT}" "$run" "${PIT_RESET}"
@@ -103,7 +116,7 @@ open_desk() {
     ((i++))
   done
   if in_hypr; then
-    hyprctl dispatch workspace 1 >/dev/null 2>&1
+    hypr_workspace 1
     notify "Desk assembled" "$(( i )) rooms across $n_mon monitor(s)"
   fi
   ok "Desk is up. Trade the open, not the setup."

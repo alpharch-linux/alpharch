@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import json
 import os
+import errno
 import shutil
 import sys
 import termios
@@ -840,18 +841,40 @@ async def canvas_server(eng, args):
                                      return_exceptions=True)
             await asyncio.sleep(1.0)
 
-    async with websockets.serve(handler, "127.0.0.1", args.port,
-                                process_request=process_request, max_size=2**22):
-        url = f"http://127.0.0.1:{args.port}"
-        print(f"{AMBER}alphad canvas{RESET} → {url}   (ctrl-c to stop)")
-        # open a bare app window if a chromium-family browser is around
+    url = f"http://127.0.0.1:{args.port}"
+
+    def open_window():
+        """Open a bare app window if a chromium-family browser is around."""
+        import shutil as _sh
         for b in ("omarchy-launch-webapp", "chromium", "brave", "google-chrome-stable"):
-            import shutil as _sh
             if _sh.which(b):
                 cmd = f"{b} {url}" if b == "omarchy-launch-webapp" else f"{b} --app={url}"
                 os.system(f"setsid {cmd} >/dev/null 2>&1 &")
-                break
+                return True
+        return False
+
+    try:
+        server = websockets.serve(handler, "127.0.0.1", args.port,
+                                  process_request=process_request, max_size=2**22)
+        await server.__aenter__()
+    except OSError as ex:
+        if ex.errno != errno.EADDRINUSE:
+            raise
+        # A canvas is already serving this port — this is SUPER+ALT+V pressed
+        # twice, not an error. Point a window at the running one and be done.
+        print(f"{AMBER}alphad canvas{RESET} already running → {url}")
+        open_window()
+        # Leave immediately. Other feed tasks are already running under gather(),
+        # so a plain return would strand a second, redundant alphad in the
+        # background every time the keybinding is pressed again.
+        sys.stdout.flush()
+        os._exit(0)
+    try:
+        print(f"{AMBER}alphad canvas{RESET} → {url}   (ctrl-c to stop)")
+        open_window()
         await broadcaster()
+    finally:
+        await server.__aexit__(None, None, None)
 
 
 # ── ui loop ────────────────────────────────────────────────────────────────

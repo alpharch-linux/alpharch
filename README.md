@@ -67,7 +67,7 @@ green or red; amber means attention. That contract holds everywhere.
 
 ### The flow canvas — the two worlds
 
-`SUPER+ALT+G` (or `alphad --canvas`) opens the real-pixel renderer: your
+`SUPER+ALT+V` (or `alphad --canvas`) opens the real-pixel renderer: your
 session's past as candles, meeting the live order book at an amber seam —
 liquidity fog, resting walls burning white-hot at their prices, the tape
 riding the path as volume-graded bubbles, CVD underneath. It's a single
@@ -113,7 +113,7 @@ countdowns into your morning sheet.
 ## Two shades, every theme
 
 The Pit (dark): near-black, one amber line. The Pit, white: the printed
-prospectus — paper, ink, amber marker. `SUPER+ALT+L` flips the whole OS
+prospectus — paper, ink, amber marker. `SUPER+ALT+I` flips the whole OS
 between them. Both wallpapers plot the same market line — once on the
 screen, once in print.
 
@@ -124,7 +124,7 @@ themes) reskins every Alpharch view too. Nothing to configure.
 ## The rest of the desk
 
 `trade-journal` — plan/notes/trades/debrief in plain Markdown, with
-`SUPER+ALT+C` screenshotting straight into today's entry.
+`SUPER+ALT+N` screenshotting straight into today's entry.
 `trade-focus` (`SUPER+ALT+D`) — do-not-disturb while you read the tape.
 `alpharch-waybar setup` — optional bar ticker with price direction and
 a focus-mode indicator. `alpharch` — the mark and the full command map.
