@@ -66,12 +66,26 @@ ok()   { printf '%b✓ %s%b\n' "${PIT_UP}"   "$*" "${PIT_RESET}"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # read a key from the flat config.toml (key = "value" or key = value)
+#
+# The trailing comment MUST come off. Every line of the shipped config.toml has
+# one, and the old version only stripped a closing quote at end-of-line: with a
+# comment after it, `tick = "10"   # price grid` returned the whole tail, and
+# `alphad --tick '10"   # price grid'` died on argparse. That killed
+# SUPER+ALT+E, SUPER+ALT+H and every symbol typed into The Line, on a stock
+# install, silently — the terminal opened and closed again. Fixed in 1.4.0.
 cfg() {
   local key="$1" default="${2:-}"
   [[ -f "$ALPHARCH_CONFIG" ]] || { printf '%s' "$default"; return; }
   local v
-  v="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$ALPHARCH_CONFIG" 2>/dev/null \
-        | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//; s/[[:space:]]*$//')"
+  v="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$ALPHARCH_CONFIG" 2>/dev/null | head -1)"
+  v="${v#*=}"                        # drop the key and the =
+  v="${v#"${v%%[![:space:]]*}"}"     # ltrim
+  if [[ "$v" == '"'* ]]; then
+    v="${v#\"}"; v="${v%%\"*}"       # quoted: take up to the CLOSING quote
+  else
+    v="${v%%#*}"                     # bare: drop an inline comment
+    v="${v%"${v##*[![:space:]]}"}"   # rtrim
+  fi
   [[ -n "$v" ]] && printf '%s' "$v" || printf '%s' "$default"
 }
 

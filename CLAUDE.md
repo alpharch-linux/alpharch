@@ -35,8 +35,9 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
 ## Architecture map (repo root = ~/alpharch, installed copy = ~/.local/share/alpharch)
 
 - `bin/alphad` — Python flow engine. Feeds: Coinbase spot (trades + level2_batch
-  book), Binance spot/perp (trades, depth20, forceOrder liqs, funding, OI —
-  **geo-blocked from US IPs**, confirmed). Six terminal views switched live with
+  book), Hyperliquid perp (**the perp default** — trades, l2Book, activeAssetCtx;
+  US-reachable, keyless), Binance spot/perp (trades, depth20, forceOrder liqs,
+  funding, OI — **geo-blocked from US IPs**, confirmed). Six terminal views switched live with
   keys f/d/h/t/p/l (+/- = tick size): flow(footprint) dom heat tape profile liqs.
   `--record/--replay FILE --speed N` = JSONL tape replay (a headline feature).
   `--json` = raw stream. `--canvas` = serves `share/canvas.html` on localhost
@@ -124,15 +125,17 @@ shade, pit-light, waybar → 1.2.0 flow canvas (--canvas) → 1.2.1 audit fixes 
 LICENSE → 1.2.2 the keybinding layer fixed on real hardware (collisions off
 G/C/L, Lua dispatch dialect, no-tty pickers, monitor JSON parse, canvas
 EADDRINUSE, installer reload, block idempotency) → 1.3.0 `alpharch update` +
-the once-a-day check. Andrew's gh is authenticated here; git push is fine when
+the once-a-day check → 1.4.0 the Hyperliquid adapter (US perps). Andrew's gh is authenticated here; git push is fine when
 he asks. Don't force-push, don't rewrite history.
 
 ## Known issues / roadmap (priority order)
 
 1. **First-run wow is broken:** new installs should land on The Pit + canvas,
    not the sparse footprint. Add an in-view `?` help key.
-2. **Hyperliquid adapter (v1.4 headline):** US-reachable perp liqs/funding/OI/
-   book to replace geo-blocked Binance.
+2. ~~**Hyperliquid adapter (v1.4 headline).**~~ **DONE in 1.4.0** — perp depth,
+   hourly funding and OI, US-reachable. One thing the roadmap assumed is not
+   true: there is no public per-event liquidation stream (see below), so the
+   liqs view says so for hyperliquid instead of showing an empty panel.
 3. Broker adapters, read-only first: IBKR (native Linux gateway) → Tradovate →
    Coinbase/Kraken → Rithmic (needs signed license). Execution only after
    read-only is proven. Never handle the user's credentials.
@@ -140,6 +143,49 @@ he asks. Don't force-push, don't rewrite history.
 5. Coinbase level2_batch book: verify it actually delivers without auth on a
    US connection (dom/heat depend on it there).
 6. Eventually: installable ISO ("when it has earned it").
+
+## Hyperliquid — what the live API actually is (verified on this machine, v1.4.0)
+
+Do not re-derive this from guesses; it was measured against production.
+
+- WS `wss://api.hyperliquid.xyz/ws`, subscribe `{"method":"subscribe",
+  "subscription":{"type":T,"coin":"BTC"}}`. Channels used: `trades`, `l2Book`,
+  `activeAssetCtx`. REST is POST `https://api.hyperliquid.xyz/info` with a
+  `{"type":...}` body.
+- **`trades` side is the AGGRESSOR: `B` lifted the ask, `A` hit the bid.** Verified
+  against the bbo strictly preceding each print at a 1-tick spread: 132/132 `A`
+  prints landed on the bid, 97 vs 9 for `B` on the ask. Getting this backwards
+  inverts CVD, delta and every green/red on screen, so re-verify it the same way
+  if you ever touch it. Fields are exactly `coin side px sz time hash tid users`
+  and `time` is ms.
+- **`l2Book` is a FULL snapshot** (`levels:[bids,asks]`, 20 a side) → `on_book`
+  replaces. Measured 0.23/s. `{"fast":true}` gives 1.87/s but only 5 levels a
+  side; we keep the deep book because dom/heat exist to show depth. Never merge
+  the two — a composite of snapshots of different ages is a book that never was.
+- **Funding is HOURLY, on the hour.** The API says so itself: `info`
+  `{"type":"predictedFundings"}` reports `HlPerp` `fundingIntervalHours: 1` with
+  `nextFundingTime` on an exact hour boundary. Binance is 8h. Label the interval
+  everywhere the rate renders (`funding/1h`) — the same number means eight
+  different things at the two intervals, and that is a bright-line-2 problem.
+- **No public per-event liquidation feed exists.** `liquidations` and
+  `allLiquidations` subscriptions are rejected ("Error parsing JSON into valid
+  websocket request"), and the public tape carries no liquidation marker.
+  Liquidation fills appear only in `userFills`, which needs a wallet address.
+  `Engine.liq_note` carries that sentence into the liqs view. Do not infer liqs
+  from the `users` field or a guessed liquidator address — that is invented data.
+- **An unknown coin — or the right coin in lowercase — closes the socket with no
+  error frame at all.** A plain reconnect loop spins on that forever behind an
+  empty screen. `hl_coin()` uppercases and strips -USD/USDT/-PERP; `hl_universe()`
+  (`info` `{"type":"meta"}`, skip `isDelisted`) validates before subscribing and
+  exits with a real message listing live coins.
+- Keepalive: the websockets protocol ping (`ping_interval=20`) holds the socket
+  open indefinitely — verified over 75s+. App-level `{"method":"ping"}` →
+  `{"channel":"pong"}` exists but is not needed on top of it.
+- OI (`openInterest`) is in base units (BTC), like binance's — no poll task
+  needed, `activeAssetCtx` pushes it ~1/s along with funding and marks.
+- Tapes now start with a `{"k":"h",...}` header naming the feed and symbol, so
+  replay can label the instrument and repeat the no-liq-stream note. Tapes cut
+  before 1.4.0 have no header and replay exactly as they always did.
 
 ## Verifying on real hardware (after a reboot or a bindings change)
 

@@ -43,14 +43,14 @@ Bloomberg taught the world that a terminal is driven, not clicked.
 btc            order flow on BTC          opt            options tape
 btc heat       liquidity heatmap          opt map        OI map · max pain
 btc dom        depth ladder               eth opt        ETH options
-btc perp       liqs · funding · OI        clock          session clock
+btc perp       funding · OI · depth       clock          session clock
 jrnl           today's journal            light / dark   flip the shade
 ```
 
 ## Order flow — every situation, one engine
 
-`alphad` reads the public trade and book streams (Coinbase, Binance —
-no keys, no accounts) and renders six views. **Switch live with one
+`alphad` reads the public trade and book streams (Coinbase, Hyperliquid,
+Binance — no keys, no accounts) and renders six views. **Switch live with one
 key** — no restarting, no menus:
 
 | Key | View | What you're reading |
@@ -60,7 +60,7 @@ key** — no restarting, no menus:
 | `h` | **heat** | Liquidity heatmap — the book through time, prints overlaid. Bookmap, in a tty |
 | `t` | **tape** | Time & sales — speed meter, big prints at 8× mean, CVD |
 | `p` | **profile** | Session volume profile — POC, 70% value area, delta per level |
-| `l` | **liqs** | Liquidations + funding countdown + open interest (binance perp) |
+| `l` | **liqs** | Funding countdown + open interest + liquidations (perp feeds) |
 
 `+`/`-` change the price grid live. Direction is the only thing painted
 green or red; amber means attention. That contract holds everywhere.
@@ -131,10 +131,26 @@ a focus-mode indicator. `alpharch` — the mark and the full command map.
 
 ## Feeds — the honest part
 
-Live and free today: Coinbase spot trades + book, Binance spot/perp
-streams (note: binance.com is geo-blocked from US IPs), Deribit options.
-`alpharch doctor` tests each one from your machine and says what's
-reachable.
+Live and free today: Coinbase spot trades + book, Hyperliquid perps,
+Binance spot/perp streams (note: binance.com is geo-blocked from US IPs),
+Deribit options. `alpharch doctor` tests each one from your machine and
+says what's reachable.
+
+**Perps run on Hyperliquid** by default — reachable from the US, keyless,
+and the source for depth, open interest and funding:
+
+```bash
+alphad --exchange hyperliquid              # BTC perp, all six views
+alphad --exchange hyperliquid --symbol ETH --view liqs
+```
+
+Its funding settles **every hour**, not every eight, so Alpharch prints it
+as `funding/1h` wherever it renders — an hourly rate read as an 8h rate is
+off by 8×. Hyperliquid publishes no public per-event liquidation stream
+(liquidation fills are exposed only per-account), so the liqs view says so
+in as many words rather than showing an empty panel that reads as a market
+where nothing is being liquidated. Set `perp_exchange = "binance"` in
+`~/.config/alpharch/config.toml` for per-event liqs, if you can reach it.
 
 CME futures depth (ES, NQ, CL…) requires a paid feed — Rithmic,
 Databento, or a broker entitlement. Equity/index options flow requires

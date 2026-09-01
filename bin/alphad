@@ -11,12 +11,15 @@ public exchange websockets: no API keys, no accounts, no subscriptions.
     h  heat      liquidity heatmap — the book through time (Bookmap, in a tty)
     t  tape      time & sales — prints, speed, big-print flags, CVD
     p  profile   session volume profile — POC, value area, delta per level
-    l  liqs      liquidations + funding (binance perp only)
+    l  liqs      liquidations + funding + open interest (perp feeds)
 
   FEEDS
+    --exchange hyperliquid             perp trades + book + hourly funding + OI
+                                       (US-reachable, keyless — the perp default)
     --exchange coinbase                spot trades + level2 book (if public)
     --exchange binance                 spot trades + top-20 book
     --exchange binance --market perp   perp trades + book + liqs + funding + OI
+                                       (geo-blocked from US IPs)
 
   REPLAY (drill your reads on recorded tape)
     alphad --record ~/tapes/nfp-day.jsonl          # record while watching
@@ -207,8 +210,10 @@ class Engine:
         self.liq_long = 0.0
         self.liq_short = 0.0
         self.funding = None                          # (rate, next_ts)
+        self.funding_hours = None                    # funding interval, hours
         self.oi = None                               # (value, ts)
         self.oi_open = None
+        self.liq_note = ""                           # why this feed shows no liqs
 
         self.notes = deque(maxlen=6)                # absorption/divergence flags
         self.event_ts = None                        # feed time (replay-aware)
@@ -449,7 +454,7 @@ def render_flow(eng, w, h):
 def render_dom(eng, w, h):
     """Ladder: asks above, bids below, walls flagged, session profile shadow."""
     if not eng.book_ok:
-        msg = eng.book_note or "no book on this feed — DOM needs --exchange binance (spot or perp)"
+        msg = eng.book_note or "no book on this feed — DOM needs --exchange hyperliquid or binance"
         return f"{DIM}{msg}{RESET}"
     depth = min(((h - 8) // 2), 16)
     asks = sorted(eng.asks.items())[:depth]
@@ -493,7 +498,7 @@ def render_heat(eng, w, h):
     """The book through time. Structure stays visible; true walls burn white-hot.
     Prints ride the path as volume-graded bubbles: · ● and ▲▼ for size."""
     if not eng.heat:
-        msg = eng.book_note or "no book on this feed — heat needs --exchange binance (spot or perp)"
+        msg = eng.book_note or "no book on this feed — heat needs --exchange hyperliquid or binance"
         return f"{DIM}{msg}{RESET}"
     cols = list(eng.heat)[-(w - 12):]
     rows = h - 7
@@ -584,12 +589,15 @@ def render_liqs(eng, w, h):
         left = max(0, nxt - time.time())
         hh, mm = int(left // 3600), int(left % 3600 // 60)
         rcol = UP if rate >= 0 else DOWN
-        out.append(f"  {DIM}funding{RESET} {rcol}{rate*100:+.4f}%{RESET} {DIM}· next in {hh:02d}:{mm:02d}{RESET}"
+        # Never print a bare rate: hyperliquid settles hourly, binance every 8h,
+        # and the same number means very different things at the two intervals.
+        per = f"/{eng.funding_hours}h" if eng.funding_hours else ""
+        out.append(f"  {DIM}funding{per}{RESET} {rcol}{rate*100:+.4f}%{RESET} {DIM}· next in {hh:02d}:{mm:02d}{RESET}"
                    + (f"   {DIM}OI{RESET} {TEXT}{fnum(eng.oi[0],1)}{RESET}"
                       + (f" {DIM}({'+' if eng.oi[0]-eng.oi_open>=0 else ''}{fnum(eng.oi[0]-eng.oi_open,1)} since open){RESET}" if eng.oi_open else "")
                       if eng.oi else ""))
     else:
-        out.append(f"  {DIM}liquidations, funding and OI live on binance perp:  alphad --exchange binance --market perp{RESET}")
+        out.append(f"  {DIM}funding, open interest and perp depth live on hyperliquid:  alphad --exchange hyperliquid{RESET}")
     tot = eng.liq_long + eng.liq_short
     if tot > 0:
         out.append(f"  {DIM}liquidated{RESET}  {DOWN}longs {fnum(eng.liq_long,1)}{RESET} {DOWN}{bar(eng.liq_long, tot, 18, '■')}{RESET}"
@@ -600,7 +608,9 @@ def render_liqs(eng, w, h):
         col = DOWN if lq.side == "long" else UP
         out.append(f"  {FAINT}{clock(lq.ts)}{RESET}  {col}{lq.side.upper():>5} LIQ{RESET}  {TEXT}{fpx(lq.price):>10}{RESET}  {col}{fnum(lq.qty,3)}{RESET}")
     if not eng.liqs:
-        out.append(f"  {DIM}no liquidations yet — quiet tape is information too{RESET}")
+        # A feed with no public liquidation stream must say so, not just look quiet.
+        out.append(f"  {DIM}{eng.liq_note}{RESET}" if eng.liq_note
+                   else f"  {DIM}no liquidations yet — quiet tape is information too{RESET}")
     return "\n".join(out)
 
 
@@ -614,9 +624,14 @@ KEYMAP = {"f": "flow", "d": "dom", "h": "heat", "t": "tape", "p": "profile", "l"
 
 # ── recorder / replay ──────────────────────────────────────────────────────
 class Recorder:
-    def __init__(self, path):
+    def __init__(self, path, feed="", symbol=""):
         self.f = open(path, "a", buffering=1)
         self._book_last = 0.0
+        # Header first: replay needs to know which feed cut the tape, so a
+        # hyperliquid tape can repeat "no public liq stream" instead of
+        # looking like a market where nothing got liquidated.
+        self.f.write(json.dumps({"k": "h", "ts": time.time(),
+                                 "feed": feed, "symbol": symbol}) + "\n")
 
     def trade(self, t: Trade):
         self.f.write(json.dumps({"k": "t", "ts": t.ts, "p": t.price, "s": t.size, "a": t.aggressor}) + "\n")
@@ -633,8 +648,20 @@ class Recorder:
     def liq(self, lq: Liq):
         self.f.write(json.dumps({"k": "l", "ts": lq.ts, "side": lq.side, "p": lq.price, "q": lq.qty}) + "\n")
 
-    def funding(self, rate, nxt):
-        self.f.write(json.dumps({"k": "f", "ts": time.time(), "r": rate, "n": nxt}) + "\n")
+    def funding(self, rate, nxt, hours=None, oi=None):
+        self.f.write(json.dumps({"k": "f", "ts": time.time(), "r": rate, "n": nxt,
+                                 "h": hours, "oi": oi}) + "\n")
+
+
+def read_tape_header(path):
+    """First line of a tape, if it carries one. Old tapes predate the header
+    and simply return None — they replay exactly as they always did."""
+    try:
+        with open(path) as f:
+            first = json.loads(f.readline() or "{}")
+        return first if first.get("k") == "h" else None
+    except (OSError, ValueError):
+        return None
 
 
 async def replay_feed(eng, rec_path, speed, on_event):
@@ -643,13 +670,18 @@ async def replay_feed(eng, rec_path, speed, on_event):
     if not lines:
         print("empty recording")
         return
-    t0 = lines[0]["ts"]
+    t0 = next((x["ts"] for x in lines if x.get("k") != "h"), lines[0]["ts"])
     wall0 = time.time()
     for ev in lines:
         wait = (ev["ts"] - t0) / speed - (time.time() - wall0)
         if wait > 0:
             await asyncio.sleep(wait)
         eng.event_ts = ev["ts"]
+        if ev["k"] == "h":
+            if str(ev.get("feed", "")).startswith("hyperliquid"):
+                eng.liq_note = HL_NO_LIQ_NOTE
+                eng.funding_hours = HL_FUNDING_HOURS
+            continue
         if ev["k"] == "t":
             eng.on_trade(Trade(ev["ts"], ev["p"], ev["s"], ev["a"]))
         elif ev["k"] == "b":
@@ -658,6 +690,12 @@ async def replay_feed(eng, rec_path, speed, on_event):
             eng.on_liq(Liq(ev["ts"], ev["side"], ev["p"], ev["q"]))
         elif ev["k"] == "f":
             eng.funding = (ev["r"], ev["n"])
+            if ev.get("h"):
+                eng.funding_hours = ev["h"]
+            if ev.get("oi") is not None:
+                eng.oi = (ev["oi"], ev["ts"])
+                if eng.oi_open is None:
+                    eng.oi_open = ev["oi"]
         on_event()
     eng.notes.append((time.time(), "replay finished"))
     await asyncio.sleep(3600)
@@ -738,6 +776,129 @@ async def binance_feed(eng, symbol, market, rec, on_event):
             continue
 
 
+# ── hyperliquid: perps a US desk can actually reach ────────────────────────
+# Free, keyless, no accounts. Verified live against the production API:
+#   trades          [{coin, side, px, sz, time, hash, tid, users}]  — side is the
+#                   AGGRESSOR ("B" lifted the ask, "A" hit the bid), time is ms
+#   l2Book          {coin, time, levels: [bids, asks]} — 20 levels a side, and a
+#                   FULL snapshot every tick, so the book replaces rather than patches.
+#                   Measured 0.23/s. The {"fast": true} variant pushes 1.87/s but
+#                   only 5 levels a side; dom and heat exist to show depth, so the
+#                   deep book wins and heat simply repeats a column while it waits.
+#                   The two are never merged: a composite of two snapshots of
+#                   different ages is a book state that never existed.
+#   activeAssetCtx  {coin, ctx: {funding, openInterest, markPx, oraclePx, …}} ~1/s
+# Keepalive: the websockets protocol ping (ping_interval=20) holds the socket
+# open indefinitely; the app-level {"method":"ping"} → {"channel":"pong"} is
+# there too but is not needed on top of it.
+HL_INFO = "https://api.hyperliquid.xyz/info"
+HL_WS = "wss://api.hyperliquid.xyz/ws"
+
+# Hyperliquid funding settles EVERY HOUR, on the hour — confirmed by the API
+# itself (info/predictedFundings reports HlPerp fundingIntervalHours: 1, with
+# nextFundingTime landing exactly on an hour boundary). Binance is 8h. The same
+# printed percentage means eight different things at the two intervals, so the
+# interval travels with the rate everywhere it renders.
+HL_FUNDING_HOURS = 1
+
+# There is no public per-event liquidation feed. Subscribing to "liquidations"
+# or "allLiquidations" is rejected outright ("Error parsing JSON into valid
+# websocket request"), and the public tape carries no liquidation marker — over
+# thousands of prints the trade objects held exactly the eight fields above.
+# Liquidation fills are only exposed per-account, through userFills, which needs
+# a wallet address. So the liqs view says this plainly rather than showing an
+# empty panel that reads as "nothing is being liquidated".
+HL_NO_LIQ_NOTE = ("hyperliquid publishes no public per-event liquidation feed — "
+                  "funding, open interest and depth above are live from it")
+
+
+def hl_coin(symbol):
+    """BTC-USD / BTCUSDT / BTC-PERP / btc → BTC. On hyperliquid the coin IS the
+    symbol, and it is case-sensitive: a lowercase one drops the connection."""
+    s = (symbol or "BTC").upper().strip()
+    for suf in ("-PERP", "-USDT", "-USDC", "-USD", "USDT", "USDC", "USD"):
+        if s.endswith(suf) and len(s) > len(suf):
+            return s[:-len(suf)]
+    return s
+
+
+def hl_universe():
+    """Live (non-delisted) perp names. Worth the round trip before subscribing:
+    an unknown coin makes the websocket close with no error frame at all, which
+    a reconnect loop would otherwise spin on forever behind an empty screen."""
+    req = urllib.request.Request(
+        HL_INFO, data=json.dumps({"type": "meta"}).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": "alpharch"})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        meta = json.loads(r.read())
+    return [a["name"] for a in meta.get("universe", []) if not a.get("isDelisted")]
+
+
+async def hyperliquid_feed(eng, symbol, rec, on_event):
+    import websockets
+
+    coin = hl_coin(symbol)
+    loop = asyncio.get_event_loop()
+    try:
+        universe = await loop.run_in_executor(None, hl_universe)
+    except Exception:
+        universe = []          # offline: let the socket report the failure
+    if universe and coin not in universe:
+        # Loud, and in every mode. Subscribing anyway would drop the socket with
+        # no error frame, and the reconnect loop would spin behind a blank screen
+        # — the exact silent failure this project refuses to ship.
+        msg = f"{coin} is not a live hyperliquid perp — try " + ", ".join(universe[:8]) + "…"
+        eng.book_note = msg
+        eng.notes.append((time.time(), msg))
+        raise SystemExit("alphad: " + msg)
+
+    eng.funding_hours = HL_FUNDING_HOURS
+    eng.liq_note = HL_NO_LIQ_NOTE
+    subs = [{"type": t, "coin": coin} for t in ("trades", "l2Book", "activeAssetCtx")]
+
+    async for ws in websockets.connect(HL_WS, ping_interval=20, max_size=2**23):
+        try:
+            for sub in subs:
+                await ws.send(json.dumps({"method": "subscribe", "subscription": sub}))
+            async for raw in ws:
+                m = json.loads(raw)
+                if not isinstance(m, dict):
+                    continue
+                ch, d = m.get("channel"), m.get("data")
+                if ch == "trades":
+                    for x in d:
+                        t = Trade(x["time"] / 1000, float(x["px"]), float(x["sz"]),
+                                  "buy" if x["side"] == "B" else "sell")
+                        eng.on_trade(t)
+                        rec and rec.trade(t)
+                        on_event()
+                elif ch == "l2Book":
+                    bids, asks = d["levels"]
+                    eng.event_ts = d["time"] / 1000
+                    eng.on_book({float(x["px"]): float(x["sz"]) for x in bids},
+                                {float(x["px"]): float(x["sz"]) for x in asks})
+                    rec and eng.book_ok and rec.book(eng.bids, eng.asks)
+                elif ch == "activeAssetCtx":
+                    ctx = (d or {}).get("ctx") or {}
+                    if ctx.get("funding") is not None:
+                        # settles on the hour, so the next mark is the next hour
+                        nxt = (int(time.time()) // 3600 + 1) * 3600
+                        eng.funding = (float(ctx["funding"]), nxt)
+                    if ctx.get("openInterest") is not None:
+                        v = float(ctx["openInterest"])
+                        eng.oi = (v, time.time())
+                        if eng.oi_open is None:
+                            eng.oi_open = v
+                    if rec and eng.funding:
+                        rec.funding(*eng.funding, hours=HL_FUNDING_HOURS,
+                                    oi=eng.oi[0] if eng.oi else None)
+                elif ch == "error":
+                    eng.book_note = "hyperliquid: " + str(d)[:140]
+        except Exception:
+            await asyncio.sleep(2)
+            continue
+
+
 async def oi_poll(eng, symbol):
     loop = asyncio.get_event_loop()
     url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol.upper()}"
@@ -771,7 +932,8 @@ def canvas_snapshot(eng, args):
         "bigs": [{"t": t.ts, "p": t.price, "s": round(t.size, 4), "a": t.aggressor}
                  for t in eng.big_prints],
         "cvds": [{"t": c[0], "v": round(c[1], 3)} for c in eng.cvd_series],
-        "funding": {"rate": eng.funding[0], "next": eng.funding[1]} if eng.funding else None,
+        "funding": {"rate": eng.funding[0], "next": eng.funding[1],
+                    "hours": eng.funding_hours} if eng.funding else None,
         "oi": eng.oi[0] if eng.oi else None,
     })
 
@@ -879,8 +1041,8 @@ async def canvas_server(eng, args):
 
 # ── ui loop ────────────────────────────────────────────────────────────────
 async def ui(eng, args, state):
-    feedname = ("replay×" + str(args.speed)) if args.replay else (
-        args.exchange + (" perp" if args.market == "perp" else ""))
+    feedname = ("replay×" + str(args.speed) + (" · " + args.replay_feed if args.replay_feed else "")) \
+        if args.replay else (args.exchange + (" perp" if args.market == "perp" else ""))
     while True:
         w, h = shutil.get_terminal_size()
         view = state["view"]
@@ -920,7 +1082,8 @@ def setup_keys(state, loop):
 
 async def main_async(args):
     eng = Engine(args.tick, args.bucket, args.large, args.imbalance)
-    rec = Recorder(args.record) if args.record else None
+    feedname = args.exchange + (" perp" if args.market == "perp" else "")
+    rec = Recorder(args.record, feedname, args.symbol) if args.record else None
     state = {"view": args.view, "eng": eng}
 
     def on_event():
@@ -959,6 +1122,8 @@ async def main_async(args):
 def feed_task(eng, args, rec, on_event):
     if args.replay:
         return replay_feed(eng, args.replay, args.speed, on_event)
+    if args.exchange == "hyperliquid":
+        return hyperliquid_feed(eng, args.symbol, rec, on_event)
     if args.exchange == "binance":
         return binance_feed(eng, args.symbol, args.market, rec, on_event)
     return coinbase_feed(eng, args.symbol, rec, on_event)
@@ -966,10 +1131,13 @@ def feed_task(eng, args, rec, on_event):
 
 def main():
     ap = argparse.ArgumentParser(description="alphad — the Alpharch flow engine")
-    ap.add_argument("--exchange", choices=["coinbase", "binance"], default="coinbase")
-    ap.add_argument("--market", choices=["spot", "perp"], default="spot",
-                    help="perp (binance only) adds liqs, funding, open interest")
-    ap.add_argument("--symbol", default=None, help="BTC-USD (coinbase) or BTCUSDT (binance)")
+    ap.add_argument("--exchange", choices=["coinbase", "binance", "hyperliquid"],
+                    default="coinbase")
+    ap.add_argument("--market", choices=["spot", "perp"], default=None,
+                    help="perp adds funding, open interest (and liqs on binance); "
+                         "implied by --exchange hyperliquid")
+    ap.add_argument("--symbol", default=None,
+                    help="BTC-USD (coinbase), BTCUSDT (binance) or BTC (hyperliquid)")
     ap.add_argument("--view", choices=list(VIEWS), default="flow")
     ap.add_argument("--tick", type=float, default=10.0, help="price grid size")
     ap.add_argument("--bucket", type=int, default=60, help="footprint column seconds")
@@ -985,10 +1153,23 @@ def main():
     ap.add_argument("--port", type=int, default=7860, help="canvas port")
     args = ap.parse_args()
 
+    # A tape knows which instrument and feed it recorded; trust it over the
+    # defaults, or a hyperliquid BTC tape replays labelled BTC-USD (coinbase spot).
+    args.replay_feed = ""
+    head = read_tape_header(args.replay) if args.replay else None
+    if head:
+        args.symbol = args.symbol or head.get("symbol") or None
+        args.replay_feed = head.get("feed") or ""
     if args.symbol is None:
-        args.symbol = "BTCUSDT" if args.exchange == "binance" else "BTC-USD"
-    if args.market == "perp" and args.exchange != "binance":
-        ap.error("--market perp requires --exchange binance")
+        args.symbol = {"binance": "BTCUSDT", "hyperliquid": "BTC"}.get(args.exchange, "BTC-USD")
+    if args.market is None:
+        args.market = "perp" if args.exchange == "hyperliquid" else "spot"
+    if args.exchange == "hyperliquid":
+        args.symbol = hl_coin(args.symbol)
+        if args.market != "perp":
+            ap.error("the hyperliquid adapter covers perps — use --exchange coinbase for spot")
+    elif args.market == "perp" and args.exchange != "binance":
+        ap.error("--market perp requires --exchange hyperliquid (or binance)")
 
     if not args.replay:
         try:

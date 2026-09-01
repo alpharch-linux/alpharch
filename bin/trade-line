@@ -7,7 +7,7 @@
 #   btc            → order flow on BTC
 #   btc heat       → liquidity heatmap on BTC
 #   eth dom        → depth ladder on ETH
-#   btc perp       → perp flow: liqs, funding, OI
+#   btc perp       → perp flow: hourly funding, OI, depth (hyperliquid)
 #   opt            → options tape (deribit)
 #   opt map        → OI map by strike, max pain
 #   desk / jrnl / brief / clock / focus / light / dark / shot / update
@@ -30,7 +30,7 @@ cat <<'EOF'
 BTC            order flow — footprint · tape · CVD
 BTC HEAT       liquidity heatmap — the book through time
 BTC DOM        depth ladder — walls and resting size
-BTC PERP       perp flow — liquidations · funding · OI
+BTC PERP       perp flow — hourly funding · OI · depth
 BTC PROFILE    session volume profile — POC and value area
 BTC CANVAS     the flow canvas — candles into the fog, real pixels
 ETH            order flow on ETH
@@ -85,9 +85,17 @@ sym_for() { # crypto shorthand -> configured exchange symbol
 run_flow() { # symbol view [market]
   local sym="$1" view="${2:-flow}" market="${3:-spot}" ex
   ex="$(cfg exchange coinbase)"
-  # perp streams are binance-only; book views try the configured exchange
-  # first and alphad says plainly if that feed has no public book.
-  if [[ "$market" == perp ]]; then ex="binance"; sym="${sym%-USD}"; sym="${sym%USDT}USDT"; fi
+  # perp goes to perp_exchange (hyperliquid by default — binance futures is
+  # geo-blocked from US IPs); book views try the configured spot exchange first
+  # and alphad says plainly if that feed has no public book.
+  if [[ "$market" == perp ]]; then
+    local coin="${sym%-USD}"; coin="${coin%USDT}"; coin="${coin%-PERP}"
+    ex="$(cfg perp_exchange hyperliquid)"
+    case "$ex" in
+      binance) sym="${coin}USDT" ;;
+      *)       ex="hyperliquid"; sym="$coin" ;;
+    esac
+  fi
   TERM_LAUNCH alphad --exchange "$ex" --market "$market" --symbol "$sym" --view "$view" \
     --tick "$(cfg tick 10)" --bucket "$(cfg bucket 60)"
 }

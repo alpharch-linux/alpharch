@@ -9,7 +9,7 @@
 source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 logo() {
   local f
@@ -33,6 +33,7 @@ cmd_map() {
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+H" "${PIT_RESET}" "liquidity heatmap — the book through time"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+V" "${PIT_RESET}" "flow canvas — the two worlds: candles into the liquidity fog"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+P" "${PIT_RESET}" "options flow — deribit tape · OI map · max pain (free, live)"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "btc perp" "${PIT_RESET}" "perp — hyperliquid depth · hourly funding · OI (US-reachable, keyless)"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+M" "${PIT_RESET}" "markets — fuzzy-pick spot, perp, or options"
   echo
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+W" "${PIT_RESET}" "session clock — Globex/NY/London opens, funding, countdowns"
@@ -76,10 +77,18 @@ doctor() {
   else
     err "Coinbase API unreachable"
   fi
-  if curl -sf --max-time 5 "https://fapi.binance.com/fapi/v1/time" >/dev/null 2>&1; then
-    ok "Binance futures API — perp flow, liqs, funding, OI live"
+  if curl -sf --max-time 5 -X POST "https://api.hyperliquid.xyz/info" \
+       -H "Content-Type: application/json" -d '{"type":"meta"}' >/dev/null 2>&1; then
+    ok "Hyperliquid public API — perp depth, hourly funding, OI live"
   else
-    err "Binance futures API unreachable (geo-blocked in the US — spot+coinbase still work)"
+    err "Hyperliquid API unreachable — perp views will have no feed"
+  fi
+  # Binance futures is the alternate perp source, not the default: it is
+  # geo-blocked from US IPs, so its absence is expected and not a failure.
+  if curl -sf --max-time 5 "https://fapi.binance.com/fapi/v1/time" >/dev/null 2>&1; then
+    ok "Binance futures API — the alternate perp source (adds per-event liqs)"
+  else
+    dim "  · Binance futures unreachable (geo-blocked in the US) — hyperliquid is the default perp feed"
   fi
   if curl -sf --max-time 5 "https://www.deribit.com/api/v2/public/get_time" >/dev/null 2>&1; then
     ok "Deribit public API — options flow live"

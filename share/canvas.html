@@ -269,7 +269,8 @@ function draw() {
       const left = Math.max(0, S.funding.next - Date.now()/1000);
       const hh = String(Math.floor(left/3600)).padStart(2,"0");
       const mm = String(Math.floor(left%3600/60)).padStart(2,"0");
-      ctx.fillText(`funding ${(S.funding.rate*100).toFixed(4)}% in ${hh}:${mm}` + (S.oi ? `   OI ${(S.oi/1000).toFixed(1)}K` : ""), 12, cy0 + 40);
+      const fper = S.funding.hours ? `/${S.funding.hours}h` : "";
+      ctx.fillText(`funding${fper} ${(S.funding.rate*100).toFixed(4)}% in ${hh}:${mm}` + (S.oi ? `   OI ${(S.oi/1000).toFixed(1)}K` : ""), 12, cy0 + 40);
     }
   }
 

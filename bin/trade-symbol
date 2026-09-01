@@ -22,8 +22,9 @@ DOGE-USD  Dogecoin                    crypto · Coinbase
 BTCUSDT   Bitcoin (Tether)            crypto · Binance
 ETHUSDT   Ethereum (Tether)           crypto · Binance
 SOLUSDT   Solana (Tether)             crypto · Binance
-BTC-PERP  Bitcoin perp · liqs+funding crypto · Binance futures
-ETH-PERP  Ethereum perp               crypto · Binance futures
+BTC-PERP  Bitcoin perp · funding+OI  crypto · Hyperliquid
+ETH-PERP  Ethereum perp · funding+OI crypto · Hyperliquid
+SOL-PERP  Solana perp · funding+OI   crypto · Hyperliquid
 BTC-OPT   Bitcoin options · deribit   options · free live
 ETH-OPT   Ethereum options · deribit  options · free live
 ES        E-mini S&P 500 · front      CME · equity index  [needs futures feed]
@@ -66,7 +67,11 @@ case "$SYM" in
     exec alphaopt --currency "${SYM%-OPT}"
     ;;
   *-PERP)
-    exec alphad --exchange binance --market perp --symbol "${SYM%-PERP}USDT" --view liqs
+    COIN="${SYM%-PERP}"
+    case "$(cfg perp_exchange hyperliquid)" in
+      binance) exec alphad --exchange binance --market perp --symbol "${COIN}USDT" --view liqs ;;
+      *)       exec alphad --exchange hyperliquid --symbol "$COIN" --view liqs ;;
+    esac
     ;;
   *-USD|*USDT)
     # persist as default and open flow

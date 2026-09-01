@@ -133,7 +133,8 @@ mkdir -p "$CFG" "$HOME/Documents/trading-journal"
 if [[ ! -f "$CFG/config.toml" ]]; then
   cat > "$CFG/config.toml" <<'EOF'
 # alpharch config — flat keys, plain text, yours.
-exchange = "coinbase"          # coinbase | binance (binance is geo-blocked from US IPs)
+exchange = "coinbase"          # spot feed: coinbase | binance (binance is geo-blocked from US IPs)
+perp_exchange = "hyperliquid"  # perp feed: hyperliquid (US-reachable, hourly funding) | binance
 default_symbol = "BTC-USD"     # BTC-USD, ETH-USD… or BTCUSDT on binance
 tick = "10"                    # price grid ($) — also +/- live inside alphad
 bucket = "60"                  # footprint time bucket (seconds)
