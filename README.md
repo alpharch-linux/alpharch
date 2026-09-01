@@ -149,6 +149,28 @@ or sell — these are tools for reading markets, and the reading is
 yours. Your journal and config are plain files on your disk. Nothing
 phones home.
 
+## Staying current
+
+```bash
+alpharch update
+```
+
+Pulls the latest Alpharch into your checkout, reruns the installer, and
+prints the version you landed on. It finds the checkout at
+`~/.local/share/alpharch-src` or `~/alpharch`, and clones one there if
+you installed via `curl | bash` and never had a repo. Reinstalling is
+idempotent — your bindings block, config, and journal are untouched.
+
+If your checkout has uncommitted work, update says so and stops rather
+than pulling over it. If you're offline, it says that too. `UPDATE` in
+The Line (`SUPER+ALT+A`) runs the same thing in a window.
+
+Run bare, `alpharch` checks once a day whether the remote has moved and
+prints a single dim line if it has. That check has a two-second timeout
+and is silent on any failure — it is the only network call `alpharch`
+itself makes. Skip it entirely by keeping no checkout, or run
+`alpharch version` instead of the bare command.
+
 ## Uninstall
 
 ```bash

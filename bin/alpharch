@@ -3,12 +3,13 @@
 #
 #   alpharch              show the mark and the command map
 #   alpharch doctor       check every dependency and feed
+#   alpharch update       pull the latest Alpharch and reinstall it
 #   alpharch version
 
 source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
-VERSION="1.2.1"
+VERSION="1.3.0"
 
 logo() {
   local f
@@ -44,6 +45,7 @@ cmd_map() {
   dim "  every command also runs by name · replay any session: alphad --record / --replay"
   dim "  themes follow Omarchy: omarchy-theme-set <anything> reskins it all"
   dim "  config: ~/.config/alpharch/   journal: ~/Documents/trading-journal/"
+  dim "  alpharch doctor  check every feed · alpharch update  pull the latest"
   echo
   printf '  %btools, never signals · est. 2026 · alpharch.org%b\n' "${PIT_FAINT}" "${PIT_RESET}"
 }
@@ -64,6 +66,7 @@ doctor() {
   have hyprctl; chk "hyprctl (desk workspaces)" $? "run inside Omarchy/Hyprland"
   { have fuzzel || have fzf; }; chk "fuzzel or fzf (market picker)" $? "sudo pacman -S fuzzel"
   have grim; chk "grim (journal capture)" $? "sudo pacman -S grim"
+  have git; chk "git (alpharch update)" $? "sudo pacman -S git"
   { have makoctl || have dunstctl; }; chk "notification daemon (focus mode)" $? "Omarchy ships mako"
   have omarchy-theme-set; chk "omarchy (theme integration)" $? "theme applies manually without it"
 
@@ -89,9 +92,159 @@ doctor() {
   dim "$pass checks passed, $warn need attention"
 }
 
+# ── update ─────────────────────────────────────────────────────────────────
+# The pull happens in a real git checkout. NOT ~/.local/share/alpharch: that is
+# the plain copy install.sh lays down, with no .git in it.
+ALPHARCH_REPO_URL="${ALPHARCH_REPO_URL:-https://github.com/alpharch-linux/alpharch.git}"
+ALPHARCH_SRC="${ALPHARCH_SRC:-$HOME/.local/share/alpharch-src}"
+ALPHARCH_DEST="$HOME/.local/share/alpharch"
+UPDATE_STAMP="$ALPHARCH_STATE/last-update-check"
+
+# git must never stop to ask a human anything: an update check that opened a
+# credential prompt would hang the front door with no way to see why.
+export GIT_TERMINAL_PROMPT=0
+
+is_repo() { git -C "$1" rev-parse --git-dir >/dev/null 2>&1; }
+
+find_src() {
+  local c
+  for c in "$ALPHARCH_SRC" "$HOME/alpharch"; do
+    if [[ -d "$c" ]] && is_repo "$c"; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
+}
+
+# Turn git's own failure text into one plain line. Never a stack trace, never
+# a wall of porcelain — the reader wants to know what to do next.
+git_reason() {
+  case "$1" in
+    *"Could not resolve host"*|*"unable to access"*|*"Connection timed out"*|\
+    *"Network is unreachable"*|*"Temporary failure in name resolution"*|*"Connection refused"*)
+      dim "    no network — try again when you're back online" ;;
+    *"not possible to fast-forward"*|*"non-fast-forward"*|*"have diverged"*)
+      dim "    your checkout has commits upstream doesn't — reconcile it by hand" ;;
+    *"Authentication failed"*|*"could not read Username"*|*"Permission denied"*)
+      dim "    the remote refused the connection (authentication)" ;;
+    *"would be overwritten"*|*"local changes"*)
+      dim "    local edits are in the way — commit or stash them first" ;;
+    *)
+      dim "    $(printf '%s' "$1" | grep -v '^[[:space:]]*$' | head -1)" ;;
+  esac
+}
+
+cmd_update() {
+  if ! have git; then
+    err "alpharch update needs git"
+    dim "    sudo pacman -S git"
+    return 1
+  fi
+
+  local src out rc
+  if ! src="$(find_src)"; then
+    src="$ALPHARCH_SRC"
+    amber "no checkout found — cloning $ALPHARCH_REPO_URL"
+    mkdir -p "$(dirname "$src")"
+    local existed=0
+    [[ -e "$src" ]] && existed=1
+    out="$(git clone "$ALPHARCH_REPO_URL" "$src" 2>&1)"; rc=$?
+    if (( rc != 0 )); then
+      # Only clean up a half-clone we made ourselves. ALPHARCH_SRC is
+      # user-overridable; never rm -rf a directory that was already there.
+      if (( existed == 0 )) && [[ -d "$src" ]]; then rm -rf "$src"; fi
+      err "could not clone Alpharch"
+      git_reason "$out"
+      return 1
+    fi
+    ok "cloned to $src"
+  else
+    say "checkout: $src"
+    local dirty
+    dirty="$(git -C "$src" status --porcelain 2>/dev/null)"
+    if [[ -n "$dirty" ]]; then
+      err "the checkout at $src has uncommitted changes — leaving it alone"
+      printf '%b%s%b\n' "${PIT_FAINT}" "$(printf '%s' "$dirty" | head -8 | sed 's/^/      /')" "${PIT_RESET}"
+      dim "    commit or stash them, then run alpharch update again"
+      return 1
+    fi
+    local before after
+    before="$(git -C "$src" rev-parse HEAD 2>/dev/null)"
+    out="$(git -C "$src" pull --ff-only 2>&1)"; rc=$?
+    if (( rc != 0 )); then
+      err "could not pull the latest Alpharch"
+      git_reason "$out"
+      return 1
+    fi
+    after="$(git -C "$src" rev-parse HEAD 2>/dev/null)"
+    if [[ "$before" == "$after" ]]; then
+      ok "already current at $(git -C "$src" rev-parse --short HEAD) — reinstalling anyway"
+    else
+      ok "pulled $(git -C "$src" rev-list --count "$before..$after" 2>/dev/null) new commit(s)"
+      printf '%b%s%b\n' "${PIT_FAINT}" \
+        "$(git -C "$src" log --oneline "$before..$after" 2>/dev/null | head -8 | sed 's/^/      /')" \
+        "${PIT_RESET}"
+    fi
+  fi
+
+  # We just looked; don't let the front door look again today.
+  date +%s > "$UPDATE_STAMP" 2>/dev/null || true
+
+  echo
+  # install.sh is about to overwrite this very file. bash reads a script
+  # lazily by byte offset, so an in-place overwrite mid-run leaves it reading
+  # garbage from the new file — this is observed behaviour, not a worry. exec
+  # into a fresh bash whose program text comes from -c and lives in memory:
+  # from here on nothing is reading bin/alpharch off the disk.
+  exec bash -c '
+    set -uo pipefail
+    src="$1"; installed="$2"
+    if ! bash "$src/install.sh"; then
+      printf "\n install failed. The checkout at %s is updated — run its install.sh by hand.\n" \
+        "$src" >&2
+      exit 1
+    fi
+    if [[ -x "$installed" ]]; then printf "\nnow running: "; "$installed" version; fi
+  ' _ "$src" "$ALPHARCH_DEST/bin/alpharch"
+}
+
+# One quiet look per day, on the front door only. Any failure at all — no git,
+# no checkout, no network, a slow remote — is silent by design: this line is a
+# courtesy, never an obstacle, and it is the only network call `alpharch` makes.
+update_check_quiet() {
+  have git || return 0
+  have timeout || return 0
+  local src stamp now remote
+  src="$(find_src)" || return 0
+  now="$(date +%s)"
+  if [[ -f "$UPDATE_STAMP" ]]; then
+    stamp="$(cat "$UPDATE_STAMP" 2>/dev/null)"
+    [[ "$stamp" =~ ^[0-9]+$ ]] || stamp=0
+    (( now - stamp < 86400 )) && return 0
+  fi
+  # Stamp before the call, not after: a check that fails should still wait a
+  # full day, so a flaky link can never turn the front door into a 2s stall
+  # on every single run.
+  printf '%s\n' "$now" > "$UPDATE_STAMP" 2>/dev/null || true
+  remote="$(timeout 2 git -C "$src" ls-remote origin HEAD 2>/dev/null | awk 'NR==1{print $1}')"
+  [[ -n "$remote" ]] || return 0
+  # Speak up only when the remote is genuinely ahead. A working checkout with
+  # unpushed commits already contains the remote tip, and a bare sha != sha
+  # test would nag it every single day; an ancestor test gets equal, ahead,
+  # behind and diverged all right, and costs nothing extra.
+  git -C "$src" merge-base --is-ancestor "$remote" HEAD 2>/dev/null && return 0
+  dim "  update available — alpharch update"
+}
+
+
 case "${1:-}" in
   doctor)   doctor ;;
-  version)  say "alpharch $VERSION" ;;
-  ""|help)  logo; echo; cmd_map ;;
-  *) err "usage: alpharch [doctor|version|help]"; exit 1 ;;
+  update)   cmd_update ;;
+  # Plain, not say(): this is a machine-readable datum. publish.sh and
+  # `alpharch update` both parse it, and an ANSI reset was landing in the
+  # middle of the version string.
+  version)  printf 'alpharch %s\n' "$VERSION" ;;
+  ""|help)
+    logo; echo; cmd_map
+    if [[ -z "${1:-}" ]]; then update_check_quiet; fi
+    ;;
+  *) err "usage: alpharch [doctor|update|version|help]"; exit 1 ;;
 esac

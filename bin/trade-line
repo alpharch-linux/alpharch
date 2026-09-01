@@ -10,7 +10,7 @@
 #   btc perp       → perp flow: liqs, funding, OI
 #   opt            → options tape (deribit)
 #   opt map        → OI map by strike, max pain
-#   desk / jrnl / brief / clock / focus / light / dark / shot
+#   desk / jrnl / brief / clock / focus / light / dark / shot / update
 #
 # Anything you type that isn't in the list still parses: SYMBOL [FUNCTION].
 
@@ -48,6 +48,7 @@ LIGHT          The Pit, white — prospectus mode
 DARK           The Pit, dark
 SHOT           capture the screen into today's journal
 MARKETS        the full market picker
+UPDATE         update Alpharch — pull, reinstall, report the new version
 EOF
 }
 
@@ -102,6 +103,7 @@ case "$SUBJ" in
   SHOT)    exec trade-journal capture ;;
   CANVAS)  setsid alphad --canvas >/dev/null 2>&1 & ;;
   MARKETS) exec trade-symbol ;;
+  UPDATE|UPD)   TERM_LAUNCH bash -c 'alpharch update; echo; read -n1 -rsp "press any key to close"' ;;
   OPT|OPTS|OPTIONS)
     case "$FUNC" in
       MAP)  TERM_LAUNCH alphaopt --view map ;;
