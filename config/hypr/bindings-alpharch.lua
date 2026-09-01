@@ -19,6 +19,12 @@ o.bind("SUPER + ALT + H", "Liquidity heatmap", "omarchy-launch-terminal trade-fl
 -- The flow canvas: the two worlds — candles into the liquidity fog. Real pixels.
 o.bind("SUPER + ALT + V", "Flow canvas", "alphad --canvas")
 
+-- The Desk Brain: your own record, read back to you. Q for Question.
+-- Q was the only clean letter left under SUPER+ALT on a stock Omarchy desk
+-- (U and Y were the others); verified against `hyprctl binds`, and SUPER+Q
+-- alone is unbound, so there is no close-window fumble next to it.
+o.bind("SUPER + ALT + Q", "Desk Brain (debrief)", "omarchy-launch-terminal trade-brain debrief")
+
 -- Options flow (deribit, free public data).
 o.bind("SUPER + ALT + P", "Options flow", "omarchy-launch-terminal alphaopt")
 

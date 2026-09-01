@@ -21,6 +21,9 @@ public exchange websockets: no API keys, no accounts, no subscriptions.
     --exchange binance --market perp   perp trades + book + liqs + funding + OI
                                        (geo-blocked from US IPs)
 
+  ANALYZE (deterministic facts a human or the Desk Brain can read)
+    alphad --analyze ~/tapes/cpi-day.jsonl         # computed JSON, no AI
+
   REPLAY (drill your reads on recorded tape)
     alphad --record ~/tapes/nfp-day.jsonl          # record while watching
     alphad --replay ~/tapes/nfp-day.jsonl --speed 4
@@ -701,6 +704,216 @@ async def replay_feed(eng, rec_path, speed, on_event):
     await asyncio.sleep(3600)
 
 
+# ── deterministic tape analysis ────────────────────────────────────────────
+# Pure arithmetic over a recorded tape: no model, no network, no estimation.
+# Every number here was computed from events the feed actually delivered, and
+# the same tape in always gives the same numbers out. This is the grounding the
+# Desk Brain narrates — it reads these facts back and never produces market
+# data of its own. Definitions travel WITH the output (see "definitions"), so
+# whatever reads it knows exactly what "held" or "wall" was taken to mean.
+
+WALL_MULT = 3.0           # a resting level is a wall at 3x the median level size
+WALL_MIN_SNAPSHOTS = 3    # ...and only if it survives three consecutive snapshots
+CASCADE_GAP_S = 30.0      # liquidations closer together than this are one cascade
+CASCADE_MIN_EVENTS = 3    # ...and it takes three to be called a cascade
+
+
+def _median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return 0.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _clk(ts):
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+def analyze_tape(path, tick, bucket_secs, large_mult, imb_ratio):
+    """Replay a tape through the engine at full speed and return computed facts."""
+    try:
+        with open(path) as f:
+            events = [json.loads(x) for x in f if x.strip()]
+    except (OSError, ValueError) as ex:
+        return {"error": f"cannot read tape: {ex}"}
+    if not events:
+        return {"error": "empty tape"}
+
+    eng = Engine(tick, bucket_secs, large_mult, imb_ratio)
+    # Analysis wants the whole session, not the rolling windows the live views
+    # keep. Unbounded here only; the live engine is untouched.
+    eng.notes = deque()
+    eng.big_prints = deque()
+    eng.buckets = deque()
+    eng.cvd_series = deque()
+
+    head = events[0] if events[0].get("k") == "h" else {}
+    trades, liqs, funding = [], [], None
+    wall_seen = {}                      # (side, price) -> [first_ts, last_ts, n, peak]
+    n_book = 0
+
+    for ev in events:
+        k, ts = ev.get("k"), ev.get("ts")
+        if k == "h" or ts is None:
+            continue
+        eng.event_ts = ts
+        if k == "t":
+            t = Trade(ts, ev["p"], ev["s"], ev["a"])
+            eng.on_trade(t)
+            trades.append(t)
+        elif k == "b":
+            bids = {float(x): q for x, q in ev["bids"]}
+            asks = {float(x): q for x, q in ev["asks"]}
+            eng.on_book(bids, asks)
+            n_book += 1
+            med = _median(list(bids.values()) + list(asks.values()))
+            if med > 0:
+                for side, book in (("bid", bids), ("ask", asks)):
+                    for px, q in book.items():
+                        if q >= WALL_MULT * med:
+                            w = wall_seen.setdefault((side, px), [ts, ts, 0, 0.0])
+                            w[1], w[2], w[3] = ts, w[2] + 1, max(w[3], q)
+        elif k == "l":
+            lq = Liq(ts, ev["side"], ev["p"], ev["q"])
+            eng.on_liq(lq)
+            liqs.append(lq)
+        elif k == "f":
+            funding = {"rate": ev["r"], "next_ts": ev["n"],
+                       "interval_hours": ev.get("h"), "open_interest": ev.get("oi")}
+    eng._close_bucket()
+
+    if not trades:
+        return {"error": "tape has no trades"}
+
+    t_start, t_end = trades[0].ts, trades[-1].ts
+    buy_vol = sum(t.size for t in trades if t.aggressor == "buy")
+    sell_vol = sum(t.size for t in trades if t.aggressor == "sell")
+    mean_size = sum(t.size for t in trades) / len(trades)
+    poc, val, vah = eng.value_area()
+
+    # walls: did price go through them, touch them, or never reach them?
+    walls = []
+    for (side, px), (first, last, n, peak) in wall_seen.items():
+        if n < WALL_MIN_SNAPSHOTS:
+            continue
+        after = [t.price for t in trades if t.ts >= first]
+        if not after:
+            outcome = "unresolved"
+        elif side == "bid":
+            lo = min(after)
+            outcome = "broke" if lo < px else ("held" if lo <= px + tick else "unresolved")
+        else:
+            hi = max(after)
+            outcome = "broke" if hi > px else ("held" if hi >= px - tick else "unresolved")
+        walls.append({"side": side, "price": px, "peak_size": round(peak, 4),
+                      "snapshots": n, "first_ts": first, "first_clock": _clk(first),
+                      "last_ts": last, "last_clock": _clk(last), "outcome": outcome})
+    walls.sort(key=lambda w: -w["peak_size"])
+
+    # liquidation cascades
+    cascades, cur = [], None
+    for lq in sorted(liqs, key=lambda x: x.ts):
+        if cur and lq.ts - cur["end_ts"] <= CASCADE_GAP_S:
+            cur["end_ts"] = lq.ts
+            cur["events"] += 1
+            cur["long_qty" if lq.side == "long" else "short_qty"] += lq.qty
+            cur["low"] = min(cur["low"], lq.price)
+            cur["high"] = max(cur["high"], lq.price)
+        else:
+            cur = {"start_ts": lq.ts, "end_ts": lq.ts, "events": 1,
+                   "long_qty": lq.qty if lq.side == "long" else 0.0,
+                   "short_qty": lq.qty if lq.side == "short" else 0.0,
+                   "low": lq.price, "high": lq.price}
+            cascades.append(cur)
+    for c in cascades:
+        c["start_clock"], c["end_clock"] = _clk(c["start_ts"]), _clk(c["end_ts"])
+        c["long_qty"], c["short_qty"] = round(c["long_qty"], 4), round(c["short_qty"], 4)
+    cascades = [c for c in cascades if c["events"] >= CASCADE_MIN_EVENTS]
+
+    cvd = list(eng.cvd_series)
+    step = max(1, -(-len(cvd) // 120))     # ceil: keep the path at 120 points or fewer
+    cvd_max = max(cvd, key=lambda c: c[1], default=None)
+    cvd_min = min(cvd, key=lambda c: c[1], default=None)
+    prof = sorted(eng.profile.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:40]
+
+    return {
+        "schema": "alpharch.tape-analysis/1",
+        "definitions": {
+            "wall": f"a resting level at or above {WALL_MULT}x the median level size in "
+                    f"the same book snapshot, seen in at least {WALL_MIN_SNAPSHOTS} snapshots",
+            "wall_outcome": "broke = price later traded through it; held = price came "
+                            "within one tick but never through; unresolved = price never reached it",
+            "aggressor": "the side that crossed the spread, as reported by the feed",
+            "delta": "buy-aggressor volume minus sell-aggressor volume",
+            "value_area": "the 70% volume band around the POC",
+            "cascade": f"{CASCADE_MIN_EVENTS}+ liquidations with gaps under {CASCADE_GAP_S}s",
+            "big_print": f"a trade at or above {large_mult}x the running mean trade size",
+        },
+        "tape": {
+            "path": os.path.abspath(path),
+            "feed": head.get("feed") or "unknown (tape predates the feed header)",
+            "symbol": head.get("symbol") or "unknown",
+            "start_ts": t_start, "start_clock": _clk(t_start),
+            "end_ts": t_end, "end_clock": _clk(t_end),
+            "duration_s": round(t_end - t_start, 1),
+            "date": time.strftime("%Y-%m-%d", time.localtime(t_start)),
+            "counts": {"trades": len(trades), "book_snapshots": n_book,
+                       "liquidations": len(liqs)},
+            "tick": tick, "bucket_secs": bucket_secs,
+        },
+        "session": {
+            "open": trades[0].price, "close": trades[-1].price,
+            "high": eng.session_high, "low": eng.session_low,
+            "range": round(eng.session_high - eng.session_low, 6),
+            "change_pct": round((trades[-1].price - trades[0].price) / trades[0].price * 100, 4),
+        },
+        "volume": {
+            "total": round(buy_vol + sell_vol, 4), "buy": round(buy_vol, 4),
+            "sell": round(sell_vol, 4), "delta": round(buy_vol - sell_vol, 4),
+            "mean_trade_size": round(mean_size, 6),
+        },
+        "profile": {
+            "poc": poc, "value_area_low": val, "value_area_high": vah,
+            "levels": [{"price": px, "buy": round(b, 4), "sell": round(sv, 4),
+                        "total": round(b + sv, 4)} for px, (b, sv) in prof],
+        },
+        "cvd": {
+            "final": round(eng.cvd, 4),
+            "max": round(cvd_max[1], 4) if cvd_max else 0.0,
+            "max_ts": cvd_max[0] if cvd_max else None,
+            "max_clock": _clk(cvd_max[0]) if cvd_max else None,
+            "min": round(cvd_min[1], 4) if cvd_min else 0.0,
+            "min_ts": cvd_min[0] if cvd_min else None,
+            "min_clock": _clk(cvd_min[0]) if cvd_min else None,
+            # The path is decimated to stay readable. Whoever reads this must not
+            # mistake the largest sampled point for the session extreme — a real
+            # number quoted for the wrong claim is still a wrong claim.
+            "path_sample_step": step,
+            "path_note": (f"decimated: every {step}th point of {len(cvd)}. Use max/min "
+                          f"above for the extremes, never the largest point in this path."),
+            "path": [{"ts": c[0], "clock": _clk(c[0]), "cvd": round(c[1], 4), "price": c[2]}
+                     for c in cvd[::step]],
+        },
+        "big_prints": [{"ts": t.ts, "clock": _clk(t.ts), "price": t.price,
+                        "size": round(t.size, 6), "aggressor": t.aggressor,
+                        "x_mean": round(t.size / mean_size, 1) if mean_size else None}
+                       for t in sorted(eng.big_prints, key=lambda x: -x.size)[:25]],
+        "flags": [{"ts": ts, "clock": _clk(ts), "note": note} for ts, note in eng.notes],
+        "walls": walls[:12],
+        "liquidations": {
+            "long_qty": round(eng.liq_long, 4), "short_qty": round(eng.liq_short, 4),
+            "cascades": cascades,
+        },
+        "funding": funding,
+        "buckets": [{"ts": b.start, "clock": _clk(b.start), "open": b.open_px,
+                     "high": b.high, "low": b.low if b.low < 1e17 else None,
+                     "close": b.close, "volume": round(b.volume, 4),
+                     "delta": round(b.delta, 4), "trades": b.trades}
+                    for b in list(eng.buckets)[-200:]],
+    }
+
+
 # ── live feeds ─────────────────────────────────────────────────────────────
 async def coinbase_feed(eng, symbol, rec, on_event):
     import websockets
@@ -1146,6 +1359,9 @@ def main():
     ap.add_argument("--refresh", type=float, default=0.5)
     ap.add_argument("--record", metavar="FILE", help="append events to a JSONL tape")
     ap.add_argument("--replay", metavar="FILE", help="replay a recorded tape")
+    ap.add_argument("--analyze", metavar="FILE",
+                    help="read a recorded tape and print computed facts as JSON "
+                         "(pure arithmetic — no model, no network)")
     ap.add_argument("--speed", type=float, default=1.0, help="replay speed multiple")
     ap.add_argument("--json", action="store_true", help="raw trade stream on stdout")
     ap.add_argument("--canvas", action="store_true",
@@ -1156,7 +1372,7 @@ def main():
     # A tape knows which instrument and feed it recorded; trust it over the
     # defaults, or a hyperliquid BTC tape replays labelled BTC-USD (coinbase spot).
     args.replay_feed = ""
-    head = read_tape_header(args.replay) if args.replay else None
+    head = read_tape_header(args.replay) if args.replay else None  # analyze exits earlier
     if head:
         args.symbol = args.symbol or head.get("symbol") or None
         args.replay_feed = head.get("feed") or ""
@@ -1170,6 +1386,11 @@ def main():
             ap.error("the hyperliquid adapter covers perps — use --exchange coinbase for spot")
     elif args.market == "perp" and args.exchange != "binance":
         ap.error("--market perp requires --exchange hyperliquid (or binance)")
+
+    if args.analyze:
+        facts = analyze_tape(args.analyze, args.tick, args.bucket, args.large, args.imbalance)
+        print(json.dumps(facts, indent=2))
+        sys.exit(1 if "error" in facts else 0)
 
     if not args.replay:
         try:

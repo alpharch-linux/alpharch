@@ -9,7 +9,7 @@
 source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 logo() {
   local f
@@ -39,6 +39,7 @@ cmd_map() {
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+W" "${PIT_RESET}" "session clock — Globex/NY/London opens, funding, countdowns"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+B" "${PIT_RESET}" "The Daily — watchlist · sessions · yesterday's debrief"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+J" "${PIT_RESET}" "journal — today's entry, plain Markdown, yours"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+Q" "${PIT_RESET}" "the Desk Brain — your day read back to you (debrief · ask · replay)"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+N" "${PIT_RESET}" "journal capture — screenshot straight into today"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+D" "${PIT_RESET}" "focus — mute the world, read the tape"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+I" "${PIT_RESET}" "the shade — flip The Pit ↔ the white prospectus"
@@ -68,6 +69,7 @@ doctor() {
   { have fuzzel || have fzf; }; chk "fuzzel or fzf (market picker)" $? "sudo pacman -S fuzzel"
   have grim; chk "grim (journal capture)" $? "sudo pacman -S grim"
   have git; chk "git (alpharch update)" $? "sudo pacman -S git"
+  have claude; chk "claude CLI (the Desk Brain)" $? "install Claude Code — https://claude.com/claude-code"
   { have makoctl || have dunstctl; }; chk "notification daemon (focus mode)" $? "Omarchy ships mako"
   have omarchy-theme-set; chk "omarchy (theme integration)" $? "theme applies manually without it"
 

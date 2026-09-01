@@ -139,6 +139,9 @@ default_symbol = "BTC-USD"     # BTC-USD, ETH-USD… or BTCUSDT on binance
 tick = "10"                    # price grid ($) — also +/- live inside alphad
 bucket = "60"                  # footprint time bucket (seconds)
 watchlist = "BTC-USD ETH-USD SOL-USD"
+tape_dir = "~/tapes"           # where you record: alphad --record ~/tapes/$(date +%F).jsonl
+debrief_on_close = "ask"       # Desk Brain at 'trade-desk close': ask | always | never
+brain_model = ""               # optional claude model for the Desk Brain (blank = your default)
 waybar_symbol = "BTC-USD"      # ticker shown by the optional waybar module
 EOF
 fi

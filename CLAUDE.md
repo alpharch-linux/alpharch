@@ -40,10 +40,19 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
   funding, OI — **geo-blocked from US IPs**, confirmed). Six terminal views switched live with
   keys f/d/h/t/p/l (+/- = tick size): flow(footprint) dom heat tape profile liqs.
   `--record/--replay FILE --speed N` = JSONL tape replay (a headline feature).
-  `--json` = raw stream. `--canvas` = serves `share/canvas.html` on localhost
+  `--json` = raw stream. `--analyze FILE` = deterministic JSON facts from a
+  tape (pure arithmetic, no model, no network) — the Desk Brain's only source
+  of market numbers. `--canvas` = serves `share/canvas.html` on localhost
   with a websocket state stream → the flagship real-pixel renderer ("the two
   worlds": candles meet the liquidity fog at an amber seam; walls burn white-hot;
   volume-graded bubbles). Engine timestamps are replay-aware via `event_ts`.
+- `bin/trade-brain` — **the Desk Brain** (SUPER+ALT+Q): debrief / ask / replay /
+  check. Shells out to the USER'S own `claude` CLI (`-p`, tools off, no session
+  persistence, run from the journal dir so no project CLAUDE.md leaks in). We
+  ship no key and run no server. Grounded ONLY in `alphad --analyze` output.
+  The fence lives in `$BRAIN_FENCE` and the closing line is re-applied in the
+  script after the model speaks, so it cannot be dropped. See the Desk Brain
+  section below before touching any of it.
 - `bin/alphaopt` — Deribit options flow (free public API): tape / OI map with
   max pain + BS-gamma density (label it a density, never dealer positioning) /
   summary. Keys t/m/s.
@@ -74,9 +83,14 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
 
       A Line · T desk · O flow · E dom · H heat · V canvas · P options
       M markets · W clock · B brief · J journal · N capture · D focus · I shade
+      Q Desk Brain (debrief)
 
   Keys Alpharch must NEVER take: F S G K (stock Omarchy) and C L (Andrew's own
   bindings — Claude Code, workspace layout toggle). v1.2.2 moved off G/C/L.
+  As of 1.5.0 the SUPER+ALT letter space is FULL except U and Y: `hyprctl binds`
+  on a stock desk shows every other letter bound by Omarchy, us, or Andrew.
+  Q went to the Desk Brain in 1.5.0. Take U or Y next, and re-run the check —
+  do not assume this list is still current.
 - `install` (repo root) = the curl|bash bootstrap served at alpharch.org/install.
   `publish.sh` = one-shot founder publish (already done; keep working).
 
@@ -115,6 +129,15 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
 - Parse hyprctl JSON with jq/python, never a flat grep: `hyprctl -j monitors`
   nests activeWorkspace.name, so grepping "name" invents monitors that
   don't exist and scatters the desk onto them.
+- **Anything AI-shaped goes through the user's own `claude` CLI.** Alpharch
+  never holds a key, never runs a server, never calls a model API directly. If
+  the CLI is missing, say so in one line and stop — never degrade to a guess.
+- **A model may never be the source of a market number.** It narrates
+  `alphad --analyze` output and nothing else. If a fact is not in the DATA
+  block, the honest answer is that the record does not contain it. When you add
+  a field to the analysis, add its definition to the `definitions` block too —
+  and if you decimate a series, say so in the payload, or a reader will quote
+  the largest sampled point as the extreme (that bug was caught in testing).
 - `alpharch version` prints PLAIN text — publish.sh and `alpharch update` parse
   it, and a styled one put an ANSI reset inside the version string.
 
@@ -125,7 +148,8 @@ shade, pit-light, waybar → 1.2.0 flow canvas (--canvas) → 1.2.1 audit fixes 
 LICENSE → 1.2.2 the keybinding layer fixed on real hardware (collisions off
 G/C/L, Lua dispatch dialect, no-tty pickers, monitor JSON parse, canvas
 EADDRINUSE, installer reload, block idempotency) → 1.3.0 `alpharch update` +
-the once-a-day check → 1.4.0 the Hyperliquid adapter (US perps). Andrew's gh is authenticated here; git push is fine when
+the once-a-day check → 1.4.0 the Hyperliquid adapter (US perps) + the cfg() inline-comment fix
+→ 1.5.0 the Desk Brain (trade-brain, alphad --analyze, tests/). Andrew's gh is authenticated here; git push is fine when
 he asks. Don't force-push, don't rewrite history.
 
 ## Known issues / roadmap (priority order)
@@ -136,13 +160,17 @@ he asks. Don't force-push, don't rewrite history.
    hourly funding and OI, US-reachable. One thing the roadmap assumed is not
    true: there is no public per-event liquidation stream (see below), so the
    liqs view says so for hyperliquid instead of showing an empty panel.
-3. Broker adapters, read-only first: IBKR (native Linux gateway) → Tradovate →
+3. ~~**The Desk Brain / the Narrator (v1.5 headline).**~~ **DONE in 1.5.0** —
+   `trade-brain` on the user's own `claude` CLI, grounded in
+   `alphad --analyze`. The fence (no forecasts, no picks, no sizing) is in the
+   system prompt AND re-enforced in the script, with live adversarial tests.
+4. Broker adapters, read-only first: IBKR (native Linux gateway) → Tradovate →
    Coinbase/Kraken → Rithmic (needs signed license). Execution only after
    read-only is proven. Never handle the user's credentials.
-4. Canvas: zoom/pan, crosshair, light-shade variant.
-5. Coinbase level2_batch book: verify it actually delivers without auth on a
+5. Canvas: zoom/pan, crosshair, light-shade variant.
+6. Coinbase level2_batch book: verify it actually delivers without auth on a
    US connection (dom/heat depend on it there).
-6. Eventually: installable ISO ("when it has earned it").
+7. Eventually: installable ISO ("when it has earned it").
 
 ## Hyperliquid — what the live API actually is (verified on this machine, v1.4.0)
 
@@ -186,6 +214,49 @@ Do not re-derive this from guesses; it was measured against production.
 - Tapes now start with a `{"k":"h",...}` header naming the feed and symbol, so
   replay can label the instrument and repeat the no-liq-stream note. Tapes cut
   before 1.4.0 have no header and replay exactly as they always did.
+
+## The Desk Brain — read this before touching trade-brain (v1.5.0)
+
+The site calls it the Narrator: "It has read every tick. Ask it anything." It
+is the first AI surface in Alpharch, so it is also the one most able to damage
+the project's credibility and its legal footing. The design exists to make that
+hard.
+
+- **Two layers, and the split is the whole point.** `alphad --analyze TAPE`
+  computes facts — pure arithmetic, no model, no network, deterministic (same
+  tape, same numbers; `tests/analyze.sh` asserts it). `trade-brain` hands those
+  facts to the user's `claude` CLI and asks it to narrate. The engine computes,
+  the model reads back. A model must never be the origin of a market number.
+- **Never our key, never our server.** `trade-brain` shells out to the user's
+  own `claude`. If it is absent: one honest line pointing at claude.com, exit
+  non-zero. If it fails: report the failure, never a hollow answer.
+- **Invocation hygiene.** `claude -p --append-system-prompt "$BRAIN_FENCE"
+  --allowedTools "" --no-session-persistence`, run with cwd = the journal
+  directory. The cwd matters: without it, CLAUDE.md auto-discovery can pull a
+  project's instructions into the Brain's context. Do NOT switch to `--bare` —
+  it forces API-key auth and would break every OAuth user.
+- **The fence is defence in depth.** It is stated in the system prompt (no
+  forecasts, no directional views, no entries/exits/stops/targets/sizes, no
+  market numbers of its own, refuse in one sentence then read the record back),
+  AND the closing line "Your record, read back to you. Never advice." is
+  re-applied by the script if the model omits it. Never rely on the model alone
+  for a guarantee you can enforce in bash.
+- **The tests are not optional.** `tests/brain-fence.sh` has a deterministic
+  half (stubbed `claude`: closing-line enforcement, no duplication, CLI failure,
+  CLI absent, fence actually reaching the system prompt) and a live half that
+  asks a real model for picks, hedged forecasts, entries/stops, sizing, an
+  "educational" framing, and an instruction override. Run `--offline` for the
+  free half. Run the full thing before any release that touches the Brain.
+- **Analysis payload rules.** Definitions ship inside the JSON (`definitions`),
+  so "wall", "held", "cascade" and "big print" mean one fixed thing to whoever
+  reads it. Any decimated series must say it is decimated: the model once
+  quoted the largest point of the sampled CVD path as the session extreme —
+  a real number, attached to a false claim. `cvd.max/min` now carry their own
+  timestamps and the path carries `path_note`.
+- **Context is capped** (`MAX_JOURNAL_BYTES`, `MAX_ANALYSIS_BYTES`) and tapes
+  come from `tape_dir` (config, default `~/tapes`). `debrief` writes under a
+  `## Debrief — Desk Brain` heading with an attribution line; it appends and
+  never rewrites the user's own words.
 
 ## Verifying on real hardware (after a reboot or a bindings change)
 

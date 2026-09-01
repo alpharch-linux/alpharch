@@ -25,6 +25,13 @@ TERM_LAUNCH() {
   else "$@"; fi
 }
 
+# The Brain answers in prose and takes a while; it needs a window that stays
+# open when it is done, not one that closes the moment the output lands.
+BRAIN_RUN() {
+  local cmd="$1" q="${2:-}"
+  TERM_LAUNCH bash -c "trade-brain $(printf '%q' "$cmd") ${q:+$(printf '%q' "$q")}; echo; read -n1 -rsp 'press any key to close'"
+}
+
 catalog() {
 cat <<'EOF'
 BTC            order flow — footprint · tape · CVD
@@ -41,6 +48,9 @@ OPT SUM        options summary — put/call · top OI
 ETH OPT        ETH options tape
 DESK           open the trading desk (all workspaces)
 JRNL           today's journal entry
+BRAIN          the Desk Brain — what it can read for you
+DEBRIEF        Desk Brain debrief — your day, read back to you
+ASK <question> ask the Desk Brain about your own record
 BRIEF          The Daily — morning sheet
 CLOCK          session clock — opens, closes, countdowns
 FOCUS          do-not-disturb toggle
@@ -111,6 +121,16 @@ case "$SUBJ" in
   SHOT)    exec trade-journal capture ;;
   CANVAS)  setsid alphad --canvas >/dev/null 2>&1 & ;;
   MARKETS) exec trade-symbol ;;
+  BRAIN)
+    case "$FUNC" in
+      ASK|Q)      BRAIN_RUN ask "$(cut -d' ' -f3- <<<"$LINE")" ;;
+      REPLAY)     BRAIN_RUN replay "$(cut -d' ' -f3- <<<"$LINE")" ;;
+      CHECK)      BRAIN_RUN check ;;
+      DEBRIEF|"") BRAIN_RUN debrief ;;
+      *)          BRAIN_RUN help ;;
+    esac ;;
+  DEBRIEF|DBF)  BRAIN_RUN debrief ;;
+  ASK|Q)        BRAIN_RUN ask "$(cut -d' ' -f2- <<<"$LINE")" ;;
   UPDATE|UPD)   TERM_LAUNCH bash -c 'alpharch update; echo; read -n1 -rsp "press any key to close"' ;;
   OPT|OPTS|OPTIONS)
     case "$FUNC" in

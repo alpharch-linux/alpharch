@@ -44,6 +44,7 @@ btc            order flow on BTC          opt            options tape
 btc heat       liquidity heatmap          opt map        OI map · max pain
 btc dom        depth ladder               eth opt        ETH options
 btc perp       funding · OI · depth       clock          session clock
+debrief        the Desk Brain debrief     ask <question> your record, questioned
 jrnl           today's journal            light / dark   flip the shade
 ```
 
@@ -129,6 +130,52 @@ themes) reskins every Alpharch view too. Nothing to configure.
 `alpharch-waybar setup` — optional bar ticker with price direction and
 a focus-mode indicator. `alpharch` — the mark and the full command map.
 
+## The Desk Brain
+
+*It has read every tick. Ask it anything.*
+
+`SUPER+ALT+Q`, or `trade-brain`. At the bell it reads your journal, the tape
+you recorded and your calendar, and writes the debrief back into your journal
+under `## Debrief — Desk Brain`: what you planned, what you noted, and what
+the tape actually shows at those timestamps.
+
+```bash
+trade-brain debrief            # today: journal + tape + calendar
+trade-brain ask "what do I keep noting on CPI days?"
+trade-brain replay ~/tapes/cpi-day.jsonl
+trade-brain check              # is it usable on this machine?
+```
+
+**It runs on your machine, on your account.** It shells out to your own
+`claude` CLI. Alpharch operates no server, holds no account, and ships no key;
+nothing is sent anywhere that wasn't already on your disk. No `claude` CLI, no
+Brain — it says so in one line and stops.
+
+**It cannot make market data up.** Every figure it sees comes from
+`alphad --analyze`, which is pure arithmetic over tape you recorded — session
+range, POC and value area, the CVD path, the biggest prints, absorption and
+divergence flags, walls that held or broke, liquidation cascades. It emits
+plain JSON and no model touches it:
+
+```bash
+alphad --record ~/tapes/$(date +%F).jsonl     # record while you watch
+alphad --analyze ~/tapes/$(date +%F).jsonl    # computed facts, no AI
+```
+
+The engine computes, the model reads back. Definitions travel with the facts,
+so "wall" and "held" mean one fixed thing.
+
+**It reads the past and refuses the future.** The Brain will not predict,
+forecast, or give a directional view; will not name an entry, exit, stop,
+target or size; and will not tell you what to do next — asked plainly, asked
+sideways, or asked as "just educational". Ask it for a pick and it declines in
+a sentence and goes back to your record. Every answer ends the same way:
+
+> Your record, read back to you. Never advice.
+
+That is a bright line, not a setting, and `tests/brain-fence.sh` asks a real
+model for picks, forecasts, stops and sizing every release to prove it holds.
+
 ## Feeds — the honest part
 
 Live and free today: Coinbase spot trades + book, Hyperliquid perps,
@@ -164,6 +211,14 @@ No signals. No picks. No AI that trades. Nothing here tells you to buy
 or sell — these are tools for reading markets, and the reading is
 yours. Your journal and config are plain files on your disk. Nothing
 phones home.
+
+There is a model in the box now, and the promise did not change. The Desk
+Brain reads your own past record and is fenced against forecasts, picks,
+sizing and stops; it narrates numbers the engine computed and is barred from
+producing market data of its own. It runs on your `claude` CLI, under your
+account, on your machine — Alpharch operates no server and holds no key.
+Turn it off by not installing the CLI: every other tool works exactly as
+before.
 
 ## Staying current
 

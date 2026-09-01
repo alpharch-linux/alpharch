@@ -124,7 +124,22 @@ open_desk() {
 
 close_desk() {
   head_ "TEARING DOWN"
-  dim "The bell has rung. Opening the journal."
+  dim "The bell has rung."
+  # The debrief is the ritual, and the Desk Brain can write the first draft of
+  # it from the day's record. Never without being asked: it costs the user a
+  # model call, so "ask" is the default and a keybind launch (no tty to answer
+  # with) simply skips it rather than hanging on a prompt nobody can see.
+  local mode; mode="$(cfg debrief_on_close ask)"
+  if [[ "$mode" != never ]] && have trade-brain && have claude; then
+    if [[ "$mode" == always ]]; then
+      trade-brain debrief || true
+    elif ! no_tty; then
+      printf '%bDesk Brain debrief before the journal? [y/N] %b' "${PIT_AMBER}" "${PIT_RESET}"
+      read -r reply </dev/tty || reply=""
+      [[ "$reply" =~ ^[Yy] ]] && { trade-brain debrief || true; }
+    fi
+  fi
+  dim "Opening the journal."
   exec trade-journal today
 }
 
