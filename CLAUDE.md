@@ -177,4 +177,14 @@ relays upstream. Don't force-push, don't rewrite history, don't publish
 announcements. When in doubt about identity/brand/scope decisions, write up the
 question for Andrew instead of guessing.
 
+**Field notes — standing convention.** Whenever you diagnose a machine-side
+issue whose fix produces no code commit (config repairs, environment problems,
+hardware quirks, "it turned out not to be a bug"), write a short root-cause
+note to `docs/field-notes/YYYY-MM-DD-<topic>.md` and push it. The cloud session
+only sees this repo; a diagnosis that lives in a terminal transcript is a
+diagnosis it will have to pay for again. Keep them short and factual: symptom,
+what you ruled out and how, root cause, what you changed, what you deliberately
+left alone. A note saying "not our bug, here's the proof" is worth as much as
+one describing a fix.
+
 *Tools, never signals.*
