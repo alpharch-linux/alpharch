@@ -31,7 +31,6 @@ Requires: python-websockets (sudo pacman -S python-websockets)
 import argparse
 import asyncio
 import json
-import math
 import os
 import shutil
 import sys
@@ -414,7 +413,6 @@ def render_flow(eng, w, h):
     if len(prices) > maxrows:
         mid = eng.grid(eng.last)
         prices = [p for p in prices if abs(p - mid) <= (maxrows // 2) * eng.tick]
-    cell_max = max(max(list(b.ask_vol.values()) + list(b.bid_vol.values()) + [0.001]) for b in buckets)
     hdr = " " * 11 + "".join(f"{DIM}{time.strftime('%H:%M', time.localtime(b.start)):>14}{RESET}" for b in buckets)
     out.append(hdr)
     for p in prices:
@@ -908,6 +906,8 @@ async def main_async(args):
     if args.json:
         # raw event stream mode: print every trade as JSON, no UI
         def on_event_json():
+            if not eng.tape:
+                return
             t = eng.tape[-1]
             print(json.dumps({"ts": t.ts, "price": t.price, "size": t.size, "aggr": t.aggressor, "cvd": eng.cvd}), flush=True)
         tasks = [feed_task(eng, args, rec, on_event_json)]

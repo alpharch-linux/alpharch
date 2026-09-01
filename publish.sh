@@ -32,11 +32,12 @@ gh auth status >/dev/null 2>&1 || { step "GitHub login — follow the browser pr
 ok "authenticated as $(gh api user -q .login)"
 
 # 3. push the code
-if [[ ! -d .git ]]; then
-  git init -b main >/dev/null
-  git config user.name  "$(gh api user -q .name  2>/dev/null || echo Alpharch)"
-  git config user.email "$(gh api user -q '.email // empty' 2>/dev/null || echo "$(gh api user -q .login)@users.noreply.github.com")"
-fi
+[[ -d .git ]] || git init -b main >/dev/null
+LOGIN="$(gh api user -q .login)"
+NAME="$(gh api user -q '.name // empty' 2>/dev/null || true)"
+EMAIL="$(gh api user -q '.email // empty' 2>/dev/null || true)"
+git config user.name  "${NAME:-$LOGIN}"
+git config user.email "${EMAIL:-$LOGIN@users.noreply.github.com}"
 git add -A
 git commit -m "Alpharch $(bin/alpharch version 2>/dev/null | awk '{print $2}' || echo 1.2.0) — the trading layer for Omarchy" >/dev/null 2>&1 || true
 if gh repo view "$ORG/$REPO" >/dev/null 2>&1; then
@@ -61,7 +62,7 @@ ok "install endpoint committed (GitHub Pages deploys in ~a minute)"
 
 # 5. verify
 step "verifying the one-liner"
-for i in $(seq 1 24); do
+for _ in $(seq 1 24); do
   if curl -fsSL "https://$SITE/install" 2>/dev/null | head -2 | grep -q bash; then
     ok "LIVE:  curl -fsSL https://$SITE/install | bash"
     echo

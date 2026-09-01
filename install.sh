@@ -97,7 +97,7 @@ if [[ "$NO_THEME" == 0 ]]; then
   THEMES_DIR="$HOME/.config/omarchy/themes"
   mkdir -p "$THEMES_DIR"
   for th in pit pit-light; do
-    rm -rf "$THEMES_DIR/$th"
+    rm -rf "${THEMES_DIR:?}/$th"
     cp -r "$DEST/themes/$th" "$THEMES_DIR/$th"
   done
   done_ "themes at $THEMES_DIR/{pit,pit-light} — flip anytime with SUPER+ALT+L"
@@ -146,7 +146,7 @@ done_ "config.toml + calendar.txt (edit freely — installer never overwrites th
 
 # ── 7. reload ──────────────────────────────────────────────────────────────
 if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 2>&1; then
-  hyprctl reload >/dev/null 2>&1 && done_ "Hyprland reloaded — bindings are live"
+  { hyprctl reload >/dev/null 2>&1 && done_ "Hyprland reloaded — bindings are live"; } || true
 fi
 
 echo
@@ -158,7 +158,11 @@ say "  alpharch            the command map"
 say "  alpharch doctor     check every dependency and feed"
 say "  SUPER+ALT+A         The Line — type 'btc heat' and go"
 say "  SUPER+ALT+T         the desk, across all your monitors"
-[[ "$NO_THEME" == 0 ]] && say "  omarchy-theme-set pit    put on The Pit (SUPER+ALT+L flips light/dark)"
+if [[ "$NO_THEME" == 0 ]]; then
+  say "  omarchy-theme-set pit    put on The Pit (SUPER+ALT+L flips light/dark)"
+fi
 say "  alpharch-waybar setup    optional bar ticker"
+say ""
+say "  If a command says 'not found', open a new terminal."
 echo
 printf '%btools, never signals · est. 2026 · alpharch.org%b\n' "$DIM" "$R"

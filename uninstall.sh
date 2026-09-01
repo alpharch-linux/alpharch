@@ -25,7 +25,9 @@ fi
 
 # 2. symlinks out (anything that points into our repo)
 for f in "$BINDIR"/*; do
-  [[ -L "$f" && "$(readlink -f "$f" 2>/dev/null)" == "$DEST"/* ]] && rm -f "$f"
+  if [[ -L "$f" && "$(readlink -f "$f" 2>/dev/null)" == "$DEST"/* ]]; then
+    rm -f "$f"
+  fi
 done
 done_ "commands unlinked"
 
@@ -40,7 +42,9 @@ done_ "branding restored"
 
 # 4. themes out (switch away first if one is active)
 cur=""
-command -v omarchy-theme-current >/dev/null 2>&1 && cur="$(omarchy-theme-current 2>/dev/null)"
+if command -v omarchy-theme-current >/dev/null 2>&1; then
+  cur="$(omarchy-theme-current 2>/dev/null || true)"
+fi
 if [[ "$cur" == "pit" || "$cur" == "pit-light" ]] && command -v omarchy-theme-set >/dev/null 2>&1; then
   omarchy-theme-set tokyo-night >/dev/null 2>&1 || true
 fi

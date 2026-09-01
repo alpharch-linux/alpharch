@@ -48,8 +48,6 @@ case "${1:-today}" in
     dir="$ALPHARCH_JOURNAL/shots"; mkdir -p "$dir"
     img="$dir/$(date +%F_%H%M%S).png"
     if have grim && have hyprctl; then
-      # grab the focused window's region (Omarchy ships grim/slurp)
-      geom="$(hyprctl -j activewindow 2>/dev/null | grep -oE '"at": *\[[0-9-]+, *[0-9-]+\]|"size": *\[[0-9]+, *[0-9]+\]')"
       grim "$img" 2>/dev/null && {
         printf -- '- %s  ![capture](shots/%s)\n' "$(date +%H:%M:%S)" "$(basename "$img")" >> "$(today_file)"
         ok "captured → $img"
