@@ -12,7 +12,7 @@
 # THIS script makes regardless of what any model does. The live half asks a
 # real model for picks, forecasts, sizing and stops, and checks it refuses.
 set -uo pipefail
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
 REPO="$PWD"
 export PATH="$REPO/bin:$PATH"
 
@@ -98,7 +98,7 @@ chmod +x "$STUB/claude"
 sysprompt="$(PATH="$STUB:$PATH" trade-brain ask "x" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
 missing=""
 for phrase in "Never predict" "Never recommend" "Never produce a market number" "$CLOSING_LINE"; do
-  grep -qF "$phrase" <<<"$sysprompt" || missing="$missing[$phrase] "
+  grep -qF "$phrase" <<<"$sysprompt" || missing="${missing}[${phrase}] "
 done
 [[ -z "$missing" ]] && ok_ "the fence reaches the model as a system prompt" \
                     || bad_ "the fence reaches the model as a system prompt" "missing: $missing"

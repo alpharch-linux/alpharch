@@ -5,8 +5,9 @@
 <title>alphad — flow canvas</title>
 <style>
   html, body { margin:0; height:100%; background:#04060b; overflow:hidden; }
-  #wrap { position:relative; width:100%; height:100%; }
-  canvas { display:block; width:100%; height:100%; }
+  #wrap { position:relative; width:100%; height:100%; cursor: crosshair; }
+  canvas { display:block; position:absolute; inset:0; width:100%; height:100%; }
+  #ov { pointer-events:none; }
   .hud { position:absolute; font-family:"JetBrains Mono","Cascadia Mono",ui-monospace,monospace; pointer-events:none; }
   #hdr { top:20px; left:26px; }
   #sym { font-size:21px; font-weight:700; color:#edf1f8; letter-spacing:.04em; }
@@ -15,18 +16,35 @@
   #sub { margin-top:5px; font-size:11.5px; color:#556070; letter-spacing:.06em; }
   #feed { top:22px; right:118px; max-width:520px; text-align:right; font-size:11.5px; color:#556070; letter-spacing:.08em; }
   #feed .spec { color:#7d8798; border:1px solid #2a3040; border-radius:3px; padding:2px 7px; margin-left:8px; }
+  #dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:1px;
+         background:#556070; }
+  #dot.live { background:#46b37b; box-shadow:0 0 6px #46b37b88; }
+  #dot.replay { background:#e8a33d; box-shadow:0 0 6px #e8a33d88; }
+  #dot.down { background:#dc5057; }
   #mark { bottom:130px; right:104px; font-size:11px; color:#3d4452; letter-spacing:.14em; }
+  #hints { bottom:116px; left:26px; font-size:11px; color:#3d4452; letter-spacing:.08em; }
+  #hints b { color:#556070; font-weight:600; }
+  #wait { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+          flex-direction:column; gap:14px; color:#556070; font-family:"JetBrains Mono",monospace; }
+  #wait .pulse { width:10px; height:10px; border-radius:50%; background:#e8a33d; animation:pu 1.2s ease-in-out infinite; }
+  @keyframes pu { 0%,100%{opacity:.25; transform:scale(.8)} 50%{opacity:1; transform:scale(1.15)} }
+  #wait .t { font-size:13px; letter-spacing:.08em; }
+  #wait .s { font-size:11px; color:#3d4452; }
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="cv"></canvas>
+  <canvas id="ov"></canvas>
   <div class="hud" id="hdr">
     <span id="sym">—</span><span id="px">—</span><span id="chg"></span>
     <div id="sub">order flow · the book through time</div>
   </div>
   <div class="hud" id="feed"></div>
+  <div class="hud" id="hints"><b>scroll</b> zoom · <b>drag</b> pan · <b>double-click</b> reset</div>
   <div class="hud" id="mark">A L P H A R C H</div>
+  <div id="wait"><div class="pulse"></div><div class="t">connecting to the feed…</div>
+    <div class="s">the canvas draws the moment data arrives</div></div>
 </div>
 <script>
 "use strict";
@@ -40,30 +58,51 @@ const C = {
 };
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d");
+const ov = document.getElementById("ov");
+const octxTop = ov.getContext("2d");
+const wrap = document.getElementById("wrap");
 let S = null;                 // engine state
 let demo = false;
+let linkDown = false;
+
+// view window: fractions of the full data span (0..1). null = follow live.
+const view = { a: null, b: null };
+const mouse = { x: -1, y: -1, in: false, drag: false, dragX: 0 };
+let geom = null;              // last draw geometry for crosshair mapping
 
 function fit() {
   const d = window.devicePixelRatio || 1;
-  cv.width = cv.clientWidth * d; cv.height = cv.clientHeight * d;
-  ctx.setTransform(d, 0, 0, d, 0, 0);
-  if (S) draw();
+  for (const c of [cv, ov]) {
+    c.width = c.clientWidth * d; c.height = c.clientHeight * d;
+    c.getContext("2d").setTransform(d, 0, 0, d, 0, 0);
+  }
+  if (S) { draw(); drawOverlay(); }
 }
 window.addEventListener("resize", fit);
 
 // ── data ────────────────────────────────────────────────────────────────
+function setDot(cls) {
+  const f = document.getElementById("feed");
+  const dot = `<span id="dot" class="${cls}"></span>`;
+  f.innerHTML = dot + (S ? `${S.feed} · alphad canvas` : "alphad canvas")
+    + (demo ? `<span class="spec">SPECIMEN DATA</span>` : "");
+}
 function connect() {
   try {
     const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onmessage = e => { S = JSON.parse(e.data); demo = false; draw(); };
+    ws.onmessage = e => { S = JSON.parse(e.data); demo = false; linkDown = false;
+      document.getElementById("wait").style.display = "none";
+      setDot("live"); draw(); drawOverlay(); };
     ws.onerror = () => fallback();
-    ws.onclose = () => setTimeout(connect, 3000);
+    ws.onclose = () => { if (S && !demo) { linkDown = true; setDot("down"); } setTimeout(connect, 3000); };
   } catch (e) { fallback(); }
 }
 let fell = false;
 function fallback() {
   if (fell) return; fell = true;
-  fetch("demo-state.json").then(r => r.json()).then(j => { S = j; demo = true; draw(); })
+  fetch("demo-state.json").then(r => r.json()).then(j => { S = j; demo = true;
+    document.getElementById("wait").style.display = "none";
+    setDot("replay"); draw(); drawOverlay(); })
     .catch(() => {});
 }
 connect(); setTimeout(() => { if (!S) fallback(); }, 1200);
@@ -76,6 +115,16 @@ function niceStep(range, maxTicks) {
   for (const m of [1, 2, 2.5, 5, 10]) if (raw / mag <= m) return m * mag;
   return 10 * mag;
 }
+function fullSpan() {
+  const t0 = S.buckets.length ? S.buckets[0].t : S.heat[0].t;
+  const t1 = S.heat[S.heat.length - 1].t;
+  return [t0, t1 + (t1 - t0) * 0.015];
+}
+function viewSpan() {
+  const [f0, f1] = fullSpan();
+  if (view.a === null) return [f0, f1];
+  return [f0 + (f1 - f0) * view.a, f0 + (f1 - f0) * view.b];
+}
 
 // ── render ──────────────────────────────────────────────────────────────
 function draw() {
@@ -85,16 +134,26 @@ function draw() {
   const CVDH = 104;                    // bottom strip
   const plot = { x:0, y:0, w: W - AX, h: H - CVDH };
 
-  // domains
-  const t0 = S.buckets.length ? S.buckets[0].t : S.heat[0].t;
-  const t1 = S.heat[S.heat.length-1].t;
-  const tPad = (t1 - t0) * 0.015;
-  const tEnd = t1 + tPad;
-  const seamT = t0 + (tEnd - t0) * 0.40;
-  const pPad = (S.high - S.low) * 0.13;
-  const pLo = S.low - pPad, pHi = S.high + pPad;
+  const [t0, tEnd] = viewSpan();
+  const [f0, f1] = fullSpan();
+  const seamT = f0 + (f1 - f0) * 0.40;
+
+  // price domain: fit to what's visible, padded
+  let pLo = Infinity, pHi = -Infinity;
+  for (const h of S.heat) if (h.t >= t0 - 1 && h.t <= tEnd + 1) {
+    if (h.mid < pLo) pLo = h.mid; if (h.mid > pHi) pHi = h.mid;
+    for (const k in h.cols) { const p = +k; if (p < pLo) pLo = p; if (p > pHi) pHi = p; }
+  }
+  for (const b of S.buckets) if (b.t + 60 >= t0 && b.t <= tEnd && b.h >= b.l) {
+    if (b.l < pLo) pLo = b.l; if (b.h > pHi) pHi = b.h;
+  }
+  if (!isFinite(pLo)) { pLo = S.low; pHi = S.high; }
+  const pPad = (pHi - pLo) * 0.10 + S.tick;
+  pLo -= pPad; pHi += pPad;
+
   const X = t => plot.x + (t - t0) / (tEnd - t0) * plot.w;
   const Y = p => plot.y + (pHi - p) / (pHi - pLo) * plot.h;
+  geom = { t0, tEnd, pLo, pHi, plot, AX, CVDH };
 
   // ground
   const g = ctx.createLinearGradient(0, 0, 0, H);
@@ -113,16 +172,15 @@ function draw() {
   }
 
   // ── the fog: book liquidity through time (right world) ────────────────
-  const cols = S.heat.filter(h => h.t >= seamT);
+  const cols = S.heat.filter(h => h.t >= Math.max(seamT, t0 - 5) && h.t <= tEnd + 5);
   if (cols.length > 1) {
     const tick = S.tick;
     const rows = Math.ceil((pHi - pLo) / tick);
-    const gw = cols.length, gh = rows;
+    const gw = cols.length, gh = Math.max(rows, 1);
     const off = document.createElement("canvas");
     off.width = gw; off.height = gh;
     const octx = off.getContext("2d");
     const img = octx.createImageData(gw, gh);
-    // reference level: 90th percentile
     const all = [];
     for (const c of cols) for (const k in c.cols) { const q = c.cols[k]; if (q > 0) all.push(q); }
     all.sort((a,b) => a-b);
@@ -150,10 +208,9 @@ function draw() {
       }
     }
     octx.putImageData(img, 0, 0);
-    const fx = X(cols[0].t), fw = X(tEnd) - fx;
+    const fx = X(cols[0].t), fw = X(cols[cols.length-1].t) - fx + Math.max((X(cols[1].t)-X(cols[0].t)), 2);
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
     ctx.drawImage(off, fx, Y(pHi), fw, Y(pLo) - Y(pHi));
-    // wall glow pass
     ctx.save();
     ctx.shadowColor = "rgba(232,163,61,.9)"; ctx.shadowBlur = 9;
     ctx.fillStyle = "rgba(255,243,220,.9)";
@@ -162,7 +219,7 @@ function draw() {
       ctx.fillRect(fx + i * cw, Y(pHi) + r * ch, Math.max(cw, 1.5), Math.max(ch * .8, 1.5));
     ctx.restore();
 
-    // ── price path through the fog ──
+    // price path
     ctx.save();
     ctx.strokeStyle = C.head; ctx.lineWidth = 1.7;
     ctx.shadowColor = "rgba(237,241,248,.55)"; ctx.shadowBlur = 6;
@@ -172,8 +229,29 @@ function draw() {
     ctx.stroke();
     ctx.restore();
 
-    // ── bubbles: big prints riding the path ──
-    for (const b of S.bigs.filter(b => b.t >= seamT)) {
+    // VWAP — the session's volume-weighted anchor
+    if (S.indicators && S.indicators.vwap && S.vwap && S.vwap.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = "#6ea3c9"; ctx.lineWidth = 1.4;
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      let started = false;
+      for (const v of S.vwap) {
+        if (v.t < t0 || v.t > tEnd) continue;
+        const x = X(v.t), y = Y(v.v);
+        started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+      const lastV = S.vwap[S.vwap.length - 1];
+      if (lastV.v >= pLo && lastV.v <= pHi) {
+        ctx.fillStyle = "#6ea3c9"; ctx.font = "600 10px ui-monospace,monospace";
+        ctx.fillText("VWAP " + fmt(lastV.v), Math.min(X(lastV.t) + 8, plot.w - 110), Y(lastV.v) - 6);
+      }
+      ctx.restore();
+    }
+
+    // bubbles
+    for (const b of S.bigs.filter(b => b.t >= seamT && b.t >= t0 && b.t <= tEnd)) {
       const r = Math.min(15, 4.5 + Math.sqrt(b.s) * 2.6);
       const col = b.a === "buy" ? C.up : C.down;
       ctx.save();
@@ -186,8 +264,8 @@ function draw() {
     }
   }
 
-  // ── the candle world (left of the seam) ───────────────────────────────
-  const bks = S.buckets.filter(b => b.t + 60 <= seamT && b.h >= b.l);
+  // ── candles (left of the seam) ────────────────────────────────────────
+  const bks = S.buckets.filter(b => b.t + 60 <= seamT && b.h >= b.l && b.t + 60 >= t0 && b.t <= tEnd);
   if (bks.length) {
     const bw = Math.max(3, (X(bks[0].t + 60) - X(bks[0].t)) * 0.62);
     for (const b of bks) {
@@ -205,19 +283,22 @@ function draw() {
     }
   }
 
-  // ── the seam: where the two worlds meet ───────────────────────────────
-  const sx = Math.round(X(seamT)) + .5;
-  const sg = ctx.createLinearGradient(0, 0, 0, plot.h);
-  sg.addColorStop(0, "rgba(232,163,61,.05)");
-  sg.addColorStop(.5, "rgba(232,163,61,.75)");
-  sg.addColorStop(1, "rgba(232,163,61,.05)");
-  ctx.strokeStyle = sg; ctx.lineWidth = 2.2;
-  ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, plot.h); ctx.stroke();
+  // ── the seam ──────────────────────────────────────────────────────────
+  if (seamT >= t0 && seamT <= tEnd) {
+    const sx = Math.round(X(seamT)) + .5;
+    const sg = ctx.createLinearGradient(0, 0, 0, plot.h);
+    sg.addColorStop(0, "rgba(232,163,61,.05)");
+    sg.addColorStop(.5, "rgba(232,163,61,.75)");
+    sg.addColorStop(1, "rgba(232,163,61,.05)");
+    ctx.strokeStyle = sg; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, plot.h); ctx.stroke();
+  }
 
   // session high / low
   ctx.setLineDash([5, 6]); ctx.lineWidth = 1;
   ctx.strokeStyle = "rgba(125,135,152,.35)";
   for (const [p, lab] of [[S.high, "HI"], [S.low, "LO"]]) {
+    if (p < pLo || p > pHi) continue;
     const y = Math.round(Y(p)) + .5;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(plot.w, y); ctx.stroke();
     ctx.fillStyle = C.dim; ctx.font = "10px ui-monospace,monospace";
@@ -225,19 +306,21 @@ function draw() {
   }
   ctx.setLineDash([]);
 
-  // last-price tag on the axis
-  const ly = Y(S.last);
-  ctx.fillStyle = C.amberHex;
-  const tag = fmt(S.last);
-  ctx.font = "600 12px ui-monospace,monospace";
-  const tw = ctx.measureText(tag).width + 16;
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(plot.w + 6, ly - 11, tw, 22, 4); else ctx.rect(plot.w + 6, ly - 11, tw, 22);
-  ctx.fill();
-  ctx.fillStyle = "#0a0d14"; ctx.fillText(tag, plot.w + 14, ly + 4);
-  ctx.strokeStyle = "rgba(232,163,61,.5)";
-  ctx.beginPath(); ctx.moveTo(0, Math.round(ly)+.5); ctx.lineTo(plot.w, Math.round(ly)+.5);
-  ctx.setLineDash([2, 5]); ctx.stroke(); ctx.setLineDash([]);
+  // last-price tag
+  if (S.last >= pLo && S.last <= pHi) {
+    const ly = Y(S.last);
+    ctx.fillStyle = C.amberHex;
+    const tag = fmt(S.last);
+    ctx.font = "600 12px ui-monospace,monospace";
+    const tw = ctx.measureText(tag).width + 16;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(plot.w + 6, ly - 11, tw, 22, 4); else ctx.rect(plot.w + 6, ly - 11, tw, 22);
+    ctx.fill();
+    ctx.fillStyle = "#0a0d14"; ctx.fillText(tag, plot.w + 14, ly + 4);
+    ctx.strokeStyle = "rgba(232,163,61,.5)";
+    ctx.beginPath(); ctx.moveTo(0, Math.round(ly)+.5); ctx.lineTo(plot.w, Math.round(ly)+.5);
+    ctx.setLineDash([2, 5]); ctx.stroke(); ctx.setLineDash([]);
+  }
 
   // ── CVD strip ─────────────────────────────────────────────────────────
   const cy0 = H - CVDH;
@@ -246,13 +329,13 @@ function draw() {
   ctx.strokeStyle = C.grid;
   ctx.beginPath(); ctx.moveTo(0, cy0 + .5); ctx.lineTo(W, cy0 + .5); ctx.stroke();
   const cs = S.cvds;
-  if (cs && cs.length > 2) {
+  const cvdOn = !S.indicators || S.indicators.cvd !== false;
+  if (cvdOn && cs && cs.length > 2) {
     let mn = Infinity, mx = -Infinity;
     for (const c of cs) { mn = Math.min(mn, c.v); mx = Math.max(mx, c.v); }
     const pad2 = (mx - mn) * .15 + 1e-9;
     const Yc = v => cy0 + 14 + (mx + pad2 - v) / (mx - mn + 2*pad2) * (CVDH - 28);
     const Xc = t => (t - cs[0].t) / (cs[cs.length-1].t - cs[0].t + 1e-9) * plot.w;
-    // zero line
     if (mn < 0 && mx > 0) {
       ctx.strokeStyle = "rgba(85,96,112,.5)"; ctx.setLineDash([3,5]);
       ctx.beginPath(); ctx.moveTo(0, Math.round(Yc(0))+.5); ctx.lineTo(plot.w, Math.round(Yc(0))+.5);
@@ -274,16 +357,100 @@ function draw() {
     }
   }
 
+  // zoom badge
+  if (view.a !== null) {
+    ctx.fillStyle = "rgba(232,163,61,.85)";
+    ctx.font = "600 11px ui-monospace,monospace";
+    ctx.fillText("ZOOMED — double-click to reset", 12, 16);
+  }
+
   // hud text
   document.getElementById("sym").textContent = S.symbol;
+  const modeTxt = (S.bars && S.bars.mode === "range")
+      ? `range bars · ${S.bars.range} per bar · the book through time`
+      : "order flow · the book through time";
+  document.getElementById("sub").textContent = modeTxt;
   document.getElementById("px").textContent = fmt(S.last);
   const chg = S.open ? (S.last - S.open) / S.open * 100 : 0;
   const ce = document.getElementById("chg");
   ce.textContent = `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`;
   ce.style.color = chg >= 0 ? C.up : C.down;
-  document.getElementById("feed").innerHTML =
-    `${S.feed} · alphad canvas` + (demo ? `<span class="spec">SPECIMEN DATA</span>` : "");
+  setDot(linkDown ? "down" : (demo ? "replay" : "live"));
 }
+
+// ── crosshair overlay ───────────────────────────────────────────────────
+function drawOverlay() {
+  const W = ov.clientWidth, H = ov.clientHeight;
+  octxTop.clearRect(0, 0, W, H);
+  if (!geom || !mouse.in) return;
+  const { t0, tEnd, pLo, pHi, plot } = geom;
+  if (mouse.x > plot.w || mouse.y > plot.h) return;
+  const t = t0 + (mouse.x / plot.w) * (tEnd - t0);
+  const p = pHi - (mouse.y / plot.h) * (pHi - pLo);
+  octxTop.strokeStyle = "rgba(198,207,223,.35)"; octxTop.lineWidth = 1;
+  octxTop.setLineDash([4, 4]);
+  octxTop.beginPath(); octxTop.moveTo(mouse.x + .5, 0); octxTop.lineTo(mouse.x + .5, plot.h); octxTop.stroke();
+  octxTop.beginPath(); octxTop.moveTo(0, mouse.y + .5); octxTop.lineTo(plot.w, mouse.y + .5); octxTop.stroke();
+  octxTop.setLineDash([]);
+  // price tag on axis
+  octxTop.font = "600 11px ui-monospace,monospace";
+  const ptxt = fmt(p);
+  const pw = octxTop.measureText(ptxt).width + 12;
+  octxTop.fillStyle = "rgba(14,18,32,.95)";
+  octxTop.strokeStyle = "rgba(198,207,223,.4)";
+  octxTop.fillRect(plot.w + 6, mouse.y - 10, pw, 20);
+  octxTop.strokeRect(plot.w + 6.5, mouse.y - 9.5, pw - 1, 19);
+  octxTop.fillStyle = "#c6cfdf";
+  octxTop.fillText(ptxt, plot.w + 12, mouse.y + 4);
+  // time tag at bottom of plot
+  const d = new Date(t * 1000);
+  const ttxt = d.toTimeString().slice(0, 8);
+  const tw = octxTop.measureText(ttxt).width + 12;
+  octxTop.fillStyle = "rgba(14,18,32,.95)";
+  octxTop.fillRect(mouse.x - tw/2, plot.h - 22, tw, 18);
+  octxTop.strokeRect(mouse.x - tw/2 + .5, plot.h - 21.5, tw - 1, 17);
+  octxTop.fillStyle = "#c6cfdf";
+  octxTop.fillText(ttxt, mouse.x - tw/2 + 6, plot.h - 9);
+}
+
+// ── interaction ─────────────────────────────────────────────────────────
+wrap.addEventListener("mousemove", e => {
+  const r = wrap.getBoundingClientRect();
+  const nx = e.clientX - r.left, ny = e.clientY - r.top;
+  if (mouse.drag && geom) {
+    const [f0, f1] = fullSpan();
+    const [a, b] = [view.a ?? 0, view.b ?? 1];
+    const dt = (nx - mouse.dragX) / geom.plot.w * (b - a);
+    let na = a - dt, nb = b - dt;
+    if (na < 0) { nb -= na; na = 0; }
+    if (nb > 1) { na -= (nb - 1); nb = 1; }
+    view.a = na; view.b = nb; mouse.dragX = nx;
+    draw();
+  }
+  mouse.x = nx; mouse.y = ny; mouse.in = true;
+  drawOverlay();
+});
+wrap.addEventListener("mouseleave", () => { mouse.in = false; mouse.drag = false; drawOverlay(); });
+wrap.addEventListener("mousedown", e => { mouse.drag = true; mouse.dragX = e.clientX - wrap.getBoundingClientRect().left; });
+window.addEventListener("mouseup", () => { mouse.drag = false; });
+wrap.addEventListener("dblclick", () => { view.a = null; view.b = null; draw(); drawOverlay(); });
+wrap.addEventListener("wheel", e => {
+  if (!geom) return;
+  e.preventDefault();
+  const [a, b] = [view.a ?? 0, view.b ?? 1];
+  const span = b - a;
+  const cx = Math.min(Math.max(mouse.x / geom.plot.w, 0), 1);
+  const anchor = a + span * cx;
+  const factor = e.deltaY > 0 ? 1.18 : 1/1.18;
+  let ns = Math.min(1, Math.max(0.02, span * factor));
+  let na = anchor - ns * cx, nb = na + ns;
+  if (na < 0) { nb -= na; na = 0; }
+  if (nb > 1) { na -= (nb - 1); nb = 1; }
+  if (nb - na >= 0.999) { view.a = null; view.b = null; }
+  else { view.a = na; view.b = nb; }
+  draw(); drawOverlay();
+}, { passive: false });
+
 fit();
 </script>
 </body>

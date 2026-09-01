@@ -132,6 +132,11 @@ a print prospectus: confident, precise, a little literary, zero hype-slop.
 - **Anything AI-shaped goes through the user's own `claude` CLI.** Alpharch
   never holds a key, never runs a server, never calls a model API directly. If
   the CLI is missing, say so in one line and stop — never degrade to a guess.
+- **Desk control is parameters, never code.** `trade-brain do` lets the model
+  emit ONLY a whitelisted JSON schema (view/tick/bars/indicators/launch); the
+  executor re-validates every field and running alphad windows validate again
+  in `apply_ctrl`. Never widen this to shell strings; new controls get schema +
+  double validation + a tests/desk-control.sh case.
 - **A model may never be the source of a market number.** It narrates
   `alphad --analyze` output and nothing else. If a fact is not in the DATA
   block, the honest answer is that the record does not contain it. When you add
@@ -149,7 +154,11 @@ LICENSE → 1.2.2 the keybinding layer fixed on real hardware (collisions off
 G/C/L, Lua dispatch dialect, no-tty pickers, monitor JSON parse, canvas
 EADDRINUSE, installer reload, block idempotency) → 1.3.0 `alpharch update` +
 the once-a-day check → 1.4.0 the Hyperliquid adapter (US perps) + the cfg() inline-comment fix
-→ 1.5.0 the Desk Brain (trade-brain, alphad --analyze, tests/). Andrew's gh is authenticated here; git push is fine when
+→ 1.5.0 the Desk Brain (trade-brain, alphad --analyze, tests/) → 1.6.0 desk
+control (`trade-brain do`: NL → validated JSON → per-window control sockets in
+$ALPHARCH_STATE/ctl; engine VWAP + range bars; canvas zoom/pan/crosshair,
+status dot, VWAP line; `?` help overlay in terminal views; friendly waiting
+screens; The Line routes control sentences to `do`). Andrew's gh is authenticated here; git push is fine when
 he asks. Don't force-push, don't rewrite history.
 
 ## Known issues / roadmap (priority order)

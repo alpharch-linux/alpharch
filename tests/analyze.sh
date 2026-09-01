@@ -9,8 +9,7 @@
 #
 #   tests/analyze.sh            run it
 set -uo pipefail
-cd "$(dirname "$(readlink -f "$0")")/.."
-
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
 ALPHAD="./bin/alphad"
 TAPE="$(mktemp -t alpharch-fixture-XXXXXX.jsonl)"
 OUT="$(mktemp -t alpharch-analysis-XXXXXX.json)"

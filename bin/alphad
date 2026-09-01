@@ -177,6 +177,8 @@ class Engine:
     def __init__(self, tick, bucket_secs, large_mult, imb_ratio):
         self.tick = tick
         self.bucket_secs = bucket_secs
+        self.bar_mode = "time"                       # time | range
+        self.bar_range = 0.0                         # $ range per bar when bar_mode=range
         self.large_mult = large_mult
         self.imb_ratio = imb_ratio
 
@@ -197,6 +199,9 @@ class Engine:
 
         self.cvd = 0.0
         self.cvd_series = deque(maxlen=600)         # (ts, cvd, price)
+        self._pv = 0.0                               # Σ price·size (session)
+        self._v = 0.0                                # Σ size
+        self.vwap_series = deque(maxlen=600)         # (ts, vwap)
 
         self.profile = defaultdict(lambda: [0.0, 0.0])  # grid px -> [buy, sell]
 
@@ -220,6 +225,7 @@ class Engine:
 
         self.notes = deque(maxlen=6)                # absorption/divergence flags
         self.event_ts = None                        # feed time (replay-aware)
+        self.symbol = ""                             # set by main for friendly screens
 
     # ── ingest ────────────────────────────────────────────────────────────
     def grid(self, p):
@@ -241,13 +247,26 @@ class Engine:
         signed = t.size if t.aggressor == "buy" else -t.size
         self.cvd += signed
         self.cvd_series.append((t.ts, self.cvd, t.price))
+        self._pv += t.price * t.size
+        self._v += t.size
+        self.vwap_series.append((t.ts, self._pv / self._v))
 
         g = self.grid(t.price)
         self.profile[g][0 if t.aggressor == "buy" else 1] += t.size
 
-        if self.cur is None or t.ts - self.cur.start >= self.bucket_secs:
+        roll = False
+        if self.cur is None:
+            roll = True
+        elif self.bar_mode == "range" and self.bar_range > 0:
+            hi = max(self.cur.high, t.price)
+            lo = min(self.cur.low, t.price)
+            roll = (hi - lo) >= self.bar_range
+        else:
+            roll = t.ts - self.cur.start >= self.bucket_secs
+        if roll:
             self._close_bucket()
-            self.cur = Bucket(start=t.ts - (t.ts % self.bucket_secs), open_px=t.price)
+            start = t.ts if self.bar_mode == "range" else t.ts - (t.ts % self.bucket_secs)
+            self.cur = Bucket(start=start, open_px=t.price)
         b = self.cur
         b.close = t.price
         b.high = max(b.high, t.price)
@@ -380,7 +399,7 @@ def header(eng, feedname, symbol, viewname, w):
 
 def footer(w, extra=""):
     keys = (f"{DIM}f{FAINT}low  {DIM}d{FAINT}om  {DIM}h{FAINT}eat  {DIM}t{FAINT}ape  "
-            f"{DIM}p{FAINT}rofile  {DIM}l{FAINT}iqs  {DIM}+/-{FAINT} tick  {DIM}q{FAINT}uit{RESET}")
+            f"{DIM}p{FAINT}rofile  {DIM}l{FAINT}iqs  {DIM}+/-{FAINT} tick  {DIM}?{FAINT} help  {DIM}q{FAINT}uit{RESET}")
     line = keys + ("   " + extra if extra else "")
     return f"{FAINT}{'─' * w}{RESET}\n" + line
 
@@ -411,12 +430,16 @@ def render_flow(eng, w, h):
     out = []
     buckets = list(eng.buckets)[-max(1, (w - 12) // 14):] + ([eng.cur] if eng.cur else [])
     if not buckets:
-        return f"{DIM}waiting for trades…{RESET}"
+        sym = f" on {AMBER}{eng.symbol}{DIM}" if eng.symbol else ""
+        return (f"\n  {TEXT}connected{DIM} — waiting for the first trades{sym}…{RESET}\n"
+                f"  {FAINT}the footprint builds as the market prints · try {DIM}t{FAINT} for the live tape meanwhile{RESET}")
     prices = set()
     for b in buckets:
         prices |= set(b.ask_vol) | set(b.bid_vol)
     if not prices:
-        return f"{DIM}waiting for trades…{RESET}"
+        sym = f" on {AMBER}{eng.symbol}{DIM}" if eng.symbol else ""
+        return (f"\n  {TEXT}connected{DIM} — waiting for the first trades{sym}…{RESET}\n"
+                f"  {FAINT}the footprint builds as the market prints · try {DIM}t{FAINT} for the live tape meanwhile{RESET}")
     prices = sorted(prices, reverse=True)
     maxrows = h - 9
     if len(prices) > maxrows:
@@ -622,6 +645,29 @@ VIEWS = {
     "tape": render_tape, "profile": render_profile, "liqs": render_liqs,
 }
 KEYMAP = {"f": "flow", "d": "dom", "h": "heat", "t": "tape", "p": "profile", "l": "liqs"}
+
+
+def render_help(eng, w, h):
+    """The ? overlay: everything you can press, right here."""
+    rows = [
+        ("f", "flow", "footprint — volume at price, delta, imbalances"),
+        ("d", "dom", "depth ladder — walls, book pressure"),
+        ("h", "heat", "liquidity heatmap — the book through time"),
+        ("t", "tape", "time & sales — prints, speed, big-print flags"),
+        ("p", "profile", "session volume profile — POC, value area"),
+        ("l", "liqs", "liquidations · funding · open interest"),
+    ]
+    out = ["", f"  {BOLD}{HEAD}THE KEYS{RESET}", ""]
+    for k, name, desc in rows:
+        out.append(f"    {AMBER}{k}{RESET}  {TEXT}{name:<9}{RESET}{DIM}{desc}{RESET}")
+    out.append("")
+    out.append(f"    {AMBER}+{RESET} {DIM}/{RESET} {AMBER}-{RESET}  {DIM}coarser / finer price grid{RESET}")
+    out.append(f"    {AMBER}?{RESET}      {DIM}close this help{RESET}")
+    out.append(f"    {AMBER}q{RESET}      {DIM}quit the window{RESET}")
+    out.append("")
+    out.append(f"  {FAINT}the whole desk: SUPER+ALT+A opens The Line · alpharch prints the map{RESET}")
+    out.append(f"  {FAINT}colors: green/red = direction, only ever direction · amber = attention{RESET}")
+    return "\n".join(out)
 # live tick-size adjustment: + coarser, - finer (heat/flow/profile grids)
 
 
@@ -1129,7 +1175,7 @@ async def oi_poll(eng, symbol):
 
 
 # ── the flow canvas: real pixels, same engine ──────────────────────────────
-def canvas_snapshot(eng, args):
+def canvas_snapshot(eng, args, state=None):
     heat = [{"t": h[0], "mid": h[1], "cols": {str(k): round(v, 3) for k, v in h[2].items()},
              "px": h[3], "aggr": h[4], "big": h[5], "sz": round(h[6], 4)} for h in eng.heat]
     return json.dumps({
@@ -1145,6 +1191,9 @@ def canvas_snapshot(eng, args):
         "bigs": [{"t": t.ts, "p": t.price, "s": round(t.size, 4), "a": t.aggressor}
                  for t in eng.big_prints],
         "cvds": [{"t": c[0], "v": round(c[1], 3)} for c in eng.cvd_series],
+        "vwap": [{"t": c[0], "v": round(c[1], 2)} for c in eng.vwap_series],
+        "bars": {"mode": eng.bar_mode, "range": eng.bar_range},
+        "indicators": (state or {}).get("indicators", {"vwap": False, "cvd": True}),
         "funding": {"rate": eng.funding[0], "next": eng.funding[1],
                     "hours": eng.funding_hours} if eng.funding else None,
         "oi": eng.oi[0] if eng.oi else None,
@@ -1160,7 +1209,7 @@ def canvas_html_path():
     return None
 
 
-async def canvas_server(eng, args):
+async def canvas_server(eng, args, state=None):
     import websockets
     from http import HTTPStatus
 
@@ -1202,7 +1251,7 @@ async def canvas_server(eng, args):
     async def handler(ws):
         clients.add(ws)
         try:
-            await ws.send(canvas_snapshot(eng, args))
+            await ws.send(canvas_snapshot(eng, args, state))
             async for _ in ws:
                 pass
         finally:
@@ -1211,7 +1260,7 @@ async def canvas_server(eng, args):
     async def broadcaster():
         while True:
             if clients:
-                msg = canvas_snapshot(eng, args)
+                msg = canvas_snapshot(eng, args, state)
                 await asyncio.gather(*(c.send(msg) for c in list(clients)),
                                      return_exceptions=True)
             await asyncio.sleep(1.0)
@@ -1252,6 +1301,82 @@ async def canvas_server(eng, args):
         await server.__aexit__(None, None, None)
 
 
+# ── the control socket: the Narrator (or any local tool) drives this window ─
+# JSON lines over a unix socket in the state dir. Whitelisted keys only; every
+# value validated. This is desk control, not code execution.
+CTRL_DIR = os.path.expanduser(os.environ.get("ALPHARCH_STATE",
+                              "~/.local/state/alpharch")) + "/ctl"
+
+
+def apply_ctrl(eng, state, msg):
+    """Validate and apply one control message. Returns a reply dict."""
+    applied = {}
+    if "view" in msg:
+        v = str(msg["view"])
+        if v in VIEWS:
+            state["view"] = v; state["help"] = False; applied["view"] = v
+    if "tick" in msg:
+        try:
+            t = float(msg["tick"])
+            if 0.0001 <= t <= 100000: eng.tick = t; applied["tick"] = t
+        except (TypeError, ValueError): pass
+    if "bars" in msg:
+        b = msg["bars"]
+        if b == "time":
+            eng.bar_mode = "time"; applied["bars"] = "time"
+        elif isinstance(b, dict) and b.get("mode") == "range":
+            try:
+                r = float(b.get("range", 0))
+                if 0.0001 <= r <= 1000000:
+                    eng.bar_mode = "range"; eng.bar_range = r
+                    applied["bars"] = {"mode": "range", "range": r}
+            except (TypeError, ValueError): pass
+    if "indicators" in msg and isinstance(msg["indicators"], dict):
+        ind = state.setdefault("indicators", {"vwap": False, "cvd": True})
+        for k in ("vwap", "cvd"):
+            if k in msg["indicators"]:
+                ind[k] = bool(msg["indicators"][k]); applied.setdefault("indicators", {})[k] = ind[k]
+    return {"ok": True, "applied": applied,
+            "state": {"symbol": eng.symbol, "view": state.get("view"),
+                      "tick": eng.tick, "bars": eng.bar_mode,
+                      "range": eng.bar_range,
+                      "indicators": state.get("indicators", {"vwap": False, "cvd": True})}}
+
+
+async def ctrl_server(eng, args, state):
+    os.makedirs(CTRL_DIR, exist_ok=True)
+    path = f"{CTRL_DIR}/{os.getpid()}.sock"
+    meta = f"{CTRL_DIR}/{os.getpid()}.json"
+    with open(meta, "w") as f:
+        json.dump({"pid": os.getpid(), "symbol": args.symbol,
+                   "exchange": args.exchange, "canvas": bool(args.canvas),
+                   "port": args.port if args.canvas else None}, f)
+
+    async def handle(reader, writer):
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=5)
+            msg = json.loads(line.decode())
+            reply = apply_ctrl(eng, state, msg) if isinstance(msg, dict) else {"ok": False}
+        except Exception as ex:
+            reply = {"ok": False, "error": type(ex).__name__}
+        try:
+            writer.write((json.dumps(reply) + "\n").encode())
+            await writer.drain(); writer.close()
+        except Exception:
+            pass
+
+    server = await asyncio.start_unix_server(handle, path=path)
+
+    def cleanup():
+        for p in (path, meta):
+            try: os.unlink(p)
+            except OSError: pass
+    import atexit
+    atexit.register(cleanup)
+    async with server:
+        await asyncio.Event().wait()
+
+
 # ── ui loop ────────────────────────────────────────────────────────────────
 async def ui(eng, args, state):
     feedname = ("replay×" + str(args.speed) + (" · " + args.replay_feed if args.replay_feed else "")) \
@@ -1260,7 +1385,10 @@ async def ui(eng, args, state):
         w, h = shutil.get_terminal_size()
         view = state["view"]
         try:
-            body = VIEWS[view](eng, w, h)
+            if state.get("help"):
+                body = render_help(eng, w, h)
+            else:
+                body = VIEWS[view](eng, w, h)
         except Exception as ex:
             body = f"{DOWN}render error in {view}: {ex}{RESET}"
         extra = f"{FAINT}{'REC ' + args.record if args.record else ''}{RESET}"
@@ -1282,8 +1410,11 @@ def setup_keys(state, loop):
         ch = os.read(fd, 1).decode(errors="ignore")
         if ch == "q":
             loop.stop()
+        elif ch == "?":
+            state["help"] = not state.get("help")
         elif ch in KEYMAP:
             state["view"] = KEYMAP[ch]
+            state["help"] = False
         elif ch in "+=":
             state["eng"].tick *= 2
         elif ch == "-":
@@ -1295,6 +1426,7 @@ def setup_keys(state, loop):
 
 async def main_async(args):
     eng = Engine(args.tick, args.bucket, args.large, args.imbalance)
+    eng.symbol = args.symbol
     feedname = args.exchange + (" perp" if args.market == "perp" else "")
     rec = Recorder(args.record, feedname, args.symbol) if args.record else None
     state = {"view": args.view, "eng": eng}
@@ -1314,7 +1446,8 @@ async def main_async(args):
         return
 
     if args.canvas:
-        tasks = [feed_task(eng, args, rec, on_event), canvas_server(eng, args)]
+        tasks = [feed_task(eng, args, rec, on_event), canvas_server(eng, args, state),
+                 ctrl_server(eng, args, state)]
         if args.exchange == "binance" and args.market == "perp" and not args.replay:
             tasks.append(oi_poll(eng, args.symbol))
         await asyncio.gather(*tasks)
@@ -1323,7 +1456,8 @@ async def main_async(args):
     loop = asyncio.get_event_loop()
     old_tty = setup_keys(state, loop)
     try:
-        tasks = [feed_task(eng, args, rec, on_event), ui(eng, args, state)]
+        tasks = [feed_task(eng, args, rec, on_event), ui(eng, args, state),
+                 ctrl_server(eng, args, state)]
         if args.exchange == "binance" and args.market == "perp" and not args.replay:
             tasks.append(oi_poll(eng, args.symbol))
         await asyncio.gather(*tasks)
@@ -1393,9 +1527,8 @@ def main():
         sys.exit(1 if "error" in facts else 0)
 
     if not args.replay:
-        try:
-            import websockets  # noqa: F401
-        except ImportError:
+        import importlib.util
+        if importlib.util.find_spec("websockets") is None:
             print("alphad needs python-websockets:  sudo pacman -S python-websockets")
             sys.exit(1)
 

@@ -5,6 +5,8 @@
 #   trade-brain ask "question"       questions over your own record
 #   trade-brain replay TAPE.jsonl    narrate a recorded session, timestamped
 #   trade-brain check                is the Brain usable on this machine?
+#   trade-brain do "sentence"        drive the desk in plain words: views, ticks,
+#                                    range bars, indicators, new windows
 #
 # ARCHITECTURE. No servers, no accounts, no keys of ours. The Brain shells out
 # to the USER'S own locally installed `claude` CLI; Alpharch never talks to a
@@ -85,7 +87,7 @@ brain_call() { # stdin: the prompt. stdout: the model's answer, fence enforced.
   local out rc
   # Run from the journal directory: neutral ground with no CLAUDE.md of its
   # own, so a project's instructions can never leak into the Brain's context.
-  out="$(cd "$ALPHARCH_JOURNAL" 2>/dev/null || cd /tmp
+  out="$(cd "$ALPHARCH_JOURNAL" 2>/dev/null || cd /tmp || exit 1
          timeout "$CALL_TIMEOUT" claude -p \
            --append-system-prompt "$BRAIN_FENCE" \
            --allowedTools "" \
@@ -299,10 +301,172 @@ cmd_check() {
   dim "The Brain reads your past record only. It refuses forecasts, picks and sizing."
 }
 
+
+# ── desk control: plain words drive the charts ─────────────────────────────
+# The model maps a sentence to a STRICT JSON action; a validator re-checks
+# every field against a whitelist; running alphad windows apply it over their
+# control sockets. The model never emits code and never touches a shell —
+# parameters only, validated twice. Advice requests are refused by the fence.
+read -r -d '' CONTROL_SCHEMA <<'SCHEMA'
+You translate one sentence of desk-control intent into ONE minified JSON
+object, and output NOTHING else — no prose, no code fences.
+
+Schema:
+{"actions":[{"target":"all","set":{"view":V,"tick":N,"bars":B,"indicators":{"vwap":bool,"cvd":bool}}}],
+ "launch":L, "say":S, "refuse":R}
+
+- V one of: "flow","dom","heat","tape","profile","liqs". Vocabulary: footprint=flow;
+  ladder/DOM/depth=dom; heatmap/bookmap=heat; time&sales/tape=tape;
+  volume profile=profile; liquidations=liqs. "candles"/"candlesticks"/"chart"
+  refer to the canvas window's candle region — no view change needed for them.
+- N: price grid size in the instrument's units, 0.0001..100000.
+  "40 range"/"40 tick"/"range of 40" with candles/bars means B, not N.
+- B: "time" or {"mode":"range","range":N} — range bars close after N of travel.
+- indicators: vwap on/off; cvd = cumulative delta strip on/off.
+- Omit any key the sentence doesn't ask about. "target" is always "all" unless
+  a symbol is named that matches one window's symbol (then use its pid from
+  INSTANCES).
+- L: only when the sentence asks to OPEN something new:
+  {"symbol":UPPERCASE,"exchange":"coinbase"|"hyperliquid"|"binance","canvas":true|false,"view":V}
+  (crypto shorthand: BTC→BTC-USD on coinbase, BTC perp→BTC on hyperliquid).
+  Otherwise L is null.
+- S: one short confirmation in a floor veteran's voice, ≤ 12 words, no emoji.
+- R: null normally. If the sentence asks for advice, a prediction, an entry,
+  or anything the fence forbids, set R to a one-sentence refusal and leave
+  actions empty and launch null.
+Output the JSON object only.
+SCHEMA
+
+cmd_do() {
+  local utter="$*"
+  [[ -z "$utter" ]] && { err 'say what you want:  trade-brain do "heatmap, 40 range, vwap on"'; return 1; }
+  brain_available || { no_brain; return 1; }
+  local ctl_dir="${ALPHARCH_STATE}/ctl" instances="[]"
+  instances="$(python3 - "$ctl_dir" <<'PY'
+import json, os, sys, glob
+d = sys.argv[1]; out = []
+for m in glob.glob(os.path.join(d, "*.json")):
+    try:
+        j = json.load(open(m))
+        sock = m[:-5] + ".sock"
+        if os.path.exists(sock):
+            j["sock"] = sock; out.append(j)
+    except Exception: pass
+print(json.dumps(out))
+PY
+)"
+  local prompt="INSTANCES (running Alpharch windows): ${instances}
+
+SENTENCE: ${utter}"
+  local plan
+  plan="$(printf '%s' "$prompt" | (cd "$ALPHARCH_JOURNAL" 2>/dev/null || cd /tmp || exit 1
+      timeout 60 claude -p \
+        --append-system-prompt "$CONTROL_SCHEMA" \
+        --allowedTools "" \
+        --no-session-persistence \
+        ${BRAIN_MODEL:+--model "$BRAIN_MODEL"} 2>/dev/null))" || true
+  [[ -z "$plan" ]] && { err "the claude CLI gave no answer — try: claude"; return 1; }
+  ALPHARCH_CTL_DIR="$ctl_dir" python3 - "$plan" <<'PY'
+import json, os, re, socket, subprocess, sys, glob
+
+raw = sys.argv[1]
+m = re.search(r'\{.*\}', raw, re.S)
+if not m:
+    print("\033[38;2;220;80;87m✗ the model returned no usable plan\033[0m"); sys.exit(1)
+try:
+    plan = json.loads(m.group(0))
+except Exception:
+    print("\033[38;2;220;80;87m✗ the plan was not valid JSON\033[0m"); sys.exit(1)
+
+AMBER="\033[38;2;232;163;61m"; UP="\033[38;2;70;179;123m"
+DIM="\033[38;2;125;135;152m"; RED="\033[38;2;220;80;87m"; R="\033[0m"
+
+if plan.get("refuse"):
+    print(f"{DIM}{plan['refuse']}{R}")
+    print(f"{DIM}Your record, read back to you. Never advice.{R}"); sys.exit(0)
+
+VIEWS = {"flow","dom","heat","tape","profile","liqs"}
+EXCH = {"coinbase","hyperliquid","binance"}
+
+def clean_set(st):
+    out = {}
+    if not isinstance(st, dict): return out
+    v = st.get("view")
+    if isinstance(v, str) and v in VIEWS: out["view"] = v
+    t = st.get("tick")
+    if isinstance(t,(int,float)) and 0.0001 <= t <= 100000: out["tick"] = float(t)
+    b = st.get("bars")
+    if b == "time": out["bars"] = "time"
+    elif isinstance(b, dict) and b.get("mode") == "range":
+        r = b.get("range")
+        if isinstance(r,(int,float)) and 0.0001 <= r <= 1000000:
+            out["bars"] = {"mode":"range","range":float(r)}
+    ind = st.get("indicators")
+    if isinstance(ind, dict):
+        io = {k: bool(ind[k]) for k in ("vwap","cvd") if k in ind}
+        if io: out["indicators"] = io
+    return out
+
+ctl = os.environ.get("ALPHARCH_CTL_DIR","")
+socks = []
+for mp in glob.glob(os.path.join(ctl, "*.json")):
+    sp = mp[:-5] + ".sock"
+    if os.path.exists(sp):
+        try: socks.append((json.load(open(mp)), sp))
+        except Exception: pass
+
+applied_any = False
+for act in (plan.get("actions") or [])[:4]:
+    st = clean_set(act.get("set", {}))
+    if not st: continue
+    tgt = act.get("target","all")
+    for meta, sp in socks:
+        if tgt != "all" and str(meta.get("pid")) != str(tgt): continue
+        try:
+            c = socket.socket(socket.AF_UNIX); c.settimeout(3); c.connect(sp)
+            c.sendall((json.dumps(st)+"\n").encode())
+            rep = json.loads(c.recv(65536).decode()); c.close()
+            ap = rep.get("applied",{})
+            if ap:
+                applied_any = True
+                bits=[]
+                if "view" in ap: bits.append(ap["view"])
+                if "bars" in ap: bits.append("range "+str(ap["bars"]["range"]) if isinstance(ap["bars"],dict) else "time bars")
+                if "tick" in ap: bits.append(f"grid {ap['tick']:g}")
+                for k,v in (ap.get("indicators") or {}).items(): bits.append(f"{k} {'on' if v else 'off'}")
+                print(f"{UP}✓{R} {meta.get('symbol','window')} — " + " · ".join(bits))
+        except Exception:
+            print(f"{RED}✗ a window did not answer (it may have closed){R}")
+
+la = plan.get("launch")
+if isinstance(la, dict) and la:
+    sym = str(la.get("symbol",""))[:20]
+    ex  = la.get("exchange","coinbase")
+    vw  = la.get("view","flow")
+    if re.fullmatch(r"[A-Z0-9\-]{2,20}", sym) and ex in EXCH and (vw in VIEWS):
+        argv = ["setsid","alphad","--exchange",ex,"--symbol",sym]
+        if la.get("canvas"): argv.append("--canvas")
+        else: argv += ["--view", vw]
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"{UP}✓{R} opening {sym} on {ex}" + (" — canvas" if la.get("canvas") else f" — {vw}"))
+        applied_any = True
+
+if not socks and not (isinstance(la, dict) and la):
+    print(f"{DIM}no Alpharch windows are running — open one first (SUPER+ALT+O or V){R}")
+elif not applied_any:
+    print(f"{DIM}nothing in that sentence maps to a desk control I know{R}")
+
+say = plan.get("say")
+if applied_any and isinstance(say, str) and say and "\n" not in say:
+    print(f"{DIM}{say[:80]}{R}")
+PY
+}
+
 case "${1:-}" in
   debrief|close)  shift; cmd_debrief "$@" ;;
   ask|q)          shift; cmd_ask "$@" ;;
   replay|narrate) shift; cmd_replay "$@" ;;
+  do|set)         shift; cmd_do "$@" ;;
   check|doctor)   cmd_check ;;
   ""|help|-h|--help)
     head_ "DESK BRAIN"

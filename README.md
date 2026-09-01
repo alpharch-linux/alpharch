@@ -63,7 +63,7 @@ key** — no restarting, no menus:
 | `p` | **profile** | Session volume profile — POC, 70% value area, delta per level |
 | `l` | **liqs** | Funding countdown + open interest + liquidations (perp feeds) |
 
-`+`/`-` change the price grid live. Direction is the only thing painted
+`+`/`-` change the price grid live; `?` shows the key map right in the view. Direction is the only thing painted
 green or red; amber means attention. That contract holds everywhere.
 
 ### The flow canvas — the two worlds
@@ -76,6 +76,20 @@ self-contained page served by alphad on localhost and streamed over a
 local websocket; Chromium opens it as a bare app window and Hyprland
 tiles it like everything else. No cloud, no accounts — the data never
 leaves your machine. The terminal views stay for SSH and purists.
+
+### Drive it with plain words
+
+The Narrator takes the wheel when you ask. `trade-brain do "set this chart
+to candlesticks with a 40 range with VWAP and cumulative delta"` — and the
+live chart rebuilds itself: range bars, VWAP line, delta strip. Views,
+grids, indicators, new windows: typed sentences, applied to running charts
+over a local socket, every parameter validated twice. The model maps words
+to whitelisted settings — it never writes code, and asking it for a trade
+gets the same refusal as always.
+
+The canvas grew hands too: scroll to zoom, drag to pan, double-click to
+reset, crosshair with price and time. A green dot means live; amber means
+replay.
 
 ### Record and replay
 

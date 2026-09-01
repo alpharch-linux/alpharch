@@ -4,9 +4,11 @@
 #   tests/run-all.sh            all of it, including live model calls
 #   tests/run-all.sh --offline  skip the live half of the fence tests
 set -uo pipefail
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
 rc=0
 ./tests/analyze.sh || rc=1
+echo
+./tests/desk-control.sh || rc=1
 echo
 ./tests/brain-fence.sh "${1:-}" || rc=1
 echo

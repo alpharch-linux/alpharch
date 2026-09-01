@@ -427,9 +427,8 @@ def main():
     ap.add_argument("--view", choices=list(VIEWS), default="tape")
     ap.add_argument("--refresh", type=float, default=1.0)
     args = ap.parse_args()
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec("websockets") is None:
         print("alphaopt needs python-websockets:  sudo pacman -S python-websockets")
         sys.exit(1)
     sys.stdout.write(HIDE)

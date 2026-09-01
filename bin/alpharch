@@ -9,7 +9,7 @@
 source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
   || source /usr/local/lib/alpharch/alpharch-common.sh
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 
 logo() {
   local f
@@ -31,7 +31,7 @@ cmd_map() {
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+O" "${PIT_RESET}" "order flow — footprint · live keys: f/d/h/t/p/l switch views"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+E" "${PIT_RESET}" "depth ladder — walls, book pressure, session profile"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+H" "${PIT_RESET}" "liquidity heatmap — the book through time"
-  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+V" "${PIT_RESET}" "flow canvas — the two worlds: candles into the liquidity fog"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+V" "${PIT_RESET}" "flow canvas — zoom, pan, crosshair; candles into the fog"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+P" "${PIT_RESET}" "options flow — deribit tape · OI map · max pain (free, live)"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "btc perp" "${PIT_RESET}" "perp — hyperliquid depth · hourly funding · OI (US-reachable, keyless)"
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+M" "${PIT_RESET}" "markets — fuzzy-pick spot, perp, or options"
@@ -45,6 +45,7 @@ cmd_map() {
   printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+I" "${PIT_RESET}" "the shade — flip The Pit ↔ the white prospectus"
   echo
   dim "  every command also runs by name · replay any session: alphad --record / --replay"
+  dim "  drive the desk in plain words: trade-brain do \"heatmap, grid 25, vwap on\""
   dim "  themes follow Omarchy: omarchy-theme-set <anything> reskins it all"
   dim "  config: ~/.config/alpharch/   journal: ~/Documents/trading-journal/"
   dim "  alpharch doctor  check every feed · alpharch update  pull the latest"

@@ -154,6 +154,10 @@ case "$SUBJ" in
   ES|NQ|RTY|CL|GC|ZN)
     notify "Futures depth" "$SUBJ needs a paid feed (Rithmic/Databento). Crypto is live free — try BTC."
     ;;
+  SET|SHOW|SWITCH|MAKE|TURN|PUT|CHANGE|OPEN|GIVE|DRIVE)
+    # a sentence, not a ticker: the Narrator drives the desk
+    BRAIN_RUN() { :; }
+    TERM_LAUNCH bash -c "trade-brain do $(printf '%q' "$LINE"); echo; read -n1 -rsp 'press any key'" ;;
   *)
     # unknown token: try it as a raw symbol on the configured exchange
     run_flow "$SUBJ" "$(tr '[:upper:]' '[:lower:]' <<<"${FUNC:-flow}")" ;;
