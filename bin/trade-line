@@ -10,7 +10,7 @@
 #   btc perp       → perp flow: hourly funding, OI, depth (hyperliquid)
 #   opt            → options tape (deribit)
 #   opt map        → OI map by strike, max pain
-#   desk / jrnl / brief / clock / focus / light / dark / shot / update
+#   desk / jrnl / brief / clock / cal / focus / light / dark / shot / update
 #
 # Anything you type that isn't in the list still parses: SYMBOL [FUNCTION].
 
@@ -53,6 +53,7 @@ DEBRIEF        Desk Brain debrief — your day, read back to you
 ASK <question> ask the Desk Brain about your own record
 BRIEF          The Daily — morning sheet
 CLOCK          session clock — opens, closes, countdowns
+CAL            economic calendar — the week's events (also: NEWS)
 FOCUS          do-not-disturb toggle
 LIGHT          The Pit, white — prospectus mode
 DARK           The Pit, dark
@@ -115,6 +116,7 @@ case "$SUBJ" in
   JRNL|JOURNAL) TERM_LAUNCH trade-journal today ;;
   BRIEF|BRF)    TERM_LAUNCH bash -c 'trade-brief; read -n1 -s' ;;
   CLOCK|CLK)    TERM_LAUNCH bash -c 'trade-clock --watch' ;;
+  CAL|NEWS|CALENDAR) TERM_LAUNCH bash -c 'trade-cal week; echo; read -n1 -s' ;;
   FOCUS|FCS)    exec trade-focus ;;
   LIGHT)   exec trade-shade light ;;
   DARK)    exec trade-shade dark ;;

@@ -146,6 +146,19 @@ emit_calendar() {
     printf '(no calendar file)\n'
   fi
   printf '=== END ===\n\n'
+  # the market's calendar (ForexFactory weekly feed via trade-cal, cached
+  # locally) — scheduled times, impact, forecast, previous. A schedule, not
+  # a results wire: the Brain may line notes up against these times but must
+  # not invent what a release came in at.
+  if command -v trade-cal >/dev/null 2>&1; then
+    local mcal
+    mcal="$(trade-cal today --plain 2>/dev/null || true)"
+    if [[ -n "$mcal" ]]; then
+      printf '=== DATA: scheduled economic events today (source: forexfactory feed; ! = high impact) ===\n'
+      printf '%s\n' "$mcal"
+      printf '=== END ===\n\n'
+    fi
+  fi
 }
 
 emit_analysis() { # $1 = tape path

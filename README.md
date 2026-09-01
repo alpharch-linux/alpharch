@@ -125,6 +125,17 @@ countdowns, DST handled properly, plus perp funding marks and your own
 calendar's next event. The Daily (`SUPER+ALT+B`) folds the same
 countdowns into your morning sheet.
 
+## The calendar
+
+`trade-cal` puts the economic calendar on the desk: `today`, `week`,
+and `next` (a countdown to the next high-impact event). Data is
+ForexFactory's published weekly feed — keyless, no account, cached
+locally and refreshed politely. It is a schedule with impact, forecast
+and previous; high impact prints amber, because amber means attention.
+The clock and The Daily read it too, and the Brain sees today's times
+when it debriefs. Filter currencies with `calendar_currencies = "USD EUR"`
+in `config.toml`. From The Line: `cal` or `news`.
+
 ## Two shades, every theme
 
 The Pit (dark): near-black, one amber line. The Pit, white: the printed

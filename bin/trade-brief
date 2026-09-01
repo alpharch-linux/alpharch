@@ -48,6 +48,10 @@ OUT="$(
   trade-clock --brief 2>/dev/null || printf '  %btrade-clock unavailable%b\n' "${PIT_FAINT}" "${PIT_RESET}"
   line
   printf '%bCALENDAR%b\n' "${PIT_AMBER}" "${PIT_RESET}"
+  if command -v trade-cal >/dev/null 2>&1; then
+    trade-cal today --plain 2>/dev/null | sed 's/^/  /' \
+      || printf '  %bcalendar feed unavailable%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+  fi
   CAL="$ALPHARCH_HOME/calendar.txt"
   if [[ -f "$CAL" ]]; then
     grep -i "^$(date +%a)\|^$(date +%F)\|^\*" "$CAL" 2>/dev/null | sed 's/^/  /' \

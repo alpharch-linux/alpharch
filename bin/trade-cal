@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""
+trade-cal — the economic calendar, on the desk.
+
+Schedule data from ForexFactory's published weekly feed (Fair Economy Media,
+keyless, no account). It is a schedule — times, impact, forecast, previous —
+not a results wire; nothing here is invented.
+
+  trade-cal              today's events
+  trade-cal week         the whole week
+  trade-cal next         countdown to the next high-impact event
+  trade-cal --json       machine output (the Brain and the bar read this)
+
+  --impact high|medium|low   minimum impact shown (default: medium for lists,
+                             high for `next`)
+  --all                      every currency (default: the currencies in
+                             config.toml `calendar_currencies`, or USD)
+  --plain                    no colors (for embedding in other tools)
+
+Cache: $ALPHARCH_STATE/calendar/ (refreshed after an hour — be polite to the
+feed). Offline, it says so and shows the cache's age instead of pretending.
+"""
+
+import datetime as dt
+import json
+import os
+import sys
+import time
+import urllib.request
+
+FEED = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+STATE = os.environ.get("ALPHARCH_STATE", os.path.expanduser("~/.local/state/alpharch"))
+CACHE = os.path.join(STATE, "calendar", "ff-thisweek.json")
+MAX_AGE = 3600  # seconds before a refresh attempt
+
+AMBER = "\033[38;2;232;163;61m"
+TEXT  = "\033[38;2;198;207;223m"
+DIM   = "\033[38;2;125;135;152m"
+FAINT = "\033[38;2;85;96;112m"
+HEAD  = "\033[38;2;237;241;248m"
+BOLD  = "\033[1m"
+RESET = "\033[0m"
+
+# follow the active Omarchy theme (same contract as trade-clock)
+_path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+if not os.environ.get("ALPHARCH_NO_THEME") and os.path.exists(_path):
+    try:
+        _tc = {}
+        for _ln in open(_path):
+            _ln = _ln.split("#", 1)[0] if not _ln.strip().startswith("#") else ""
+            if "=" in _ln:
+                _k, _v = _ln.split("=", 1)
+                _v = _v.strip().strip('"')
+                if _v.startswith("#") and len(_v) == 7:
+                    _tc[_k.strip()] = tuple(int(_v[i:i + 2], 16) for i in (1, 3, 5))
+        _fg = lambda rgb: "\033[38;2;%d;%d;%dm" % rgb
+        if _tc:
+            AMBER = _fg(_tc.get("accent", (232, 163, 61)))
+            TEXT  = _fg(_tc.get("foreground", (198, 207, 223)))
+            DIM   = _fg(_tc.get("dark_foreground", _tc.get("muted", (125, 135, 152))))
+            FAINT = _fg(_tc.get("muted", (85, 96, 112)))
+            HEAD  = _fg(_tc.get("bright_foreground", _tc.get("foreground", (237, 241, 248))))
+    except OSError:
+        pass
+
+IMPACT_RANK = {"high": 3, "medium": 2, "low": 1, "holiday": 1, "non-economic": 1}
+
+
+def cfg_currencies():
+    """calendar_currencies from config.toml, else USD. 'ALL' means everything."""
+    env = os.environ.get("ALPHARCH_CAL_CURRENCIES")
+    if env:
+        return env.upper().split()
+    path = os.path.join(
+        os.environ.get("ALPHARCH_HOME", os.path.expanduser("~/.config/alpharch")),
+        "config.toml")
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            v = tomllib.load(f).get("calendar_currencies", "USD")
+        return str(v).upper().split()
+    except Exception:
+        return ["USD"]
+
+
+def now():
+    fake = os.environ.get("ALPHARCH_CAL_NOW")  # tests pin the clock
+    if fake:
+        return dt.datetime.fromisoformat(fake)
+    return dt.datetime.now().astimezone()
+
+
+def load_events():
+    """Return (events, note). Cache first; refresh when stale; honest offline."""
+    fixture = os.environ.get("ALPHARCH_CAL_FILE")  # tests inject a feed file
+    if fixture:
+        return json.load(open(fixture)), ""
+    age = None
+    if os.path.exists(CACHE):
+        age = time.time() - os.path.getmtime(CACHE)
+    if age is None or age > MAX_AGE:
+        try:
+            req = urllib.request.Request(FEED, headers={"User-Agent": "alpharch trade-cal"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = r.read()
+            json.loads(data)  # refuse to cache garbage
+            os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+            tmp = CACHE + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, CACHE)
+            age = 0
+        except Exception:
+            pass  # fall through to whatever cache exists
+    if not os.path.exists(CACHE):
+        return None, "calendar feed unreachable and no cache yet — try again online"
+    note = ""
+    if age and age > MAX_AGE:
+        note = "feed unreachable — showing cache from %dh ago" % max(1, int(age // 3600))
+    return json.load(open(CACHE)), note
+
+
+def parse(events, currencies, min_rank):
+    out = []
+    for e in events:
+        try:
+            when = dt.datetime.fromisoformat(e["date"])
+        except (KeyError, ValueError):
+            continue
+        cur = str(e.get("country", "")).upper()
+        imp = str(e.get("impact", "low")).lower()
+        if "ALL" not in currencies and cur not in currencies and cur != "ALL":
+            continue
+        if IMPACT_RANK.get(imp, 1) < min_rank:
+            continue
+        out.append({
+            "title": e.get("title", "?"),
+            "currency": cur,
+            "when": when,
+            "impact": imp,
+            "forecast": e.get("forecast", "") or "",
+            "previous": e.get("previous", "") or "",
+        })
+    out.sort(key=lambda x: x["when"])
+    return out
+
+
+def paint(imp):
+    return {"high": AMBER + BOLD, "medium": TEXT}.get(imp, FAINT)
+
+
+def fmt_row(e, plain, local):
+    t = e["when"].astimezone() if local else e["when"]
+    fp = ""
+    if e["forecast"] or e["previous"]:
+        fp = "  f %s · p %s" % (e["forecast"] or "—", e["previous"] or "—")
+    row = "%s %s  %-4s %s%s" % (
+        t.strftime("%a"), t.strftime("%H:%M"), e["currency"], e["title"], fp)
+    if plain:
+        return ("! " if e["impact"] == "high" else "  ") + row
+    return "  %s%s%s" % (paint(e["impact"]), row, RESET)
+
+
+def cmd_list(events, note, plain, today_only):
+    n = now()
+    shown = [e for e in events if (not today_only or e["when"].astimezone().date() == n.date())]
+    if not shown:
+        print(("  " if plain else "  %s" % FAINT) +
+              ("nothing on the calendar today" if today_only else "an empty week") +
+              ("" if plain else RESET))
+    for e in shown:
+        print(fmt_row(e, plain, local=True))
+    if note:
+        print(("  " if plain else "  %s" % DIM) + note + ("" if plain else RESET))
+    if not plain:
+        print("  %ssource: ForexFactory weekly feed · impact amber = attention%s" % (FAINT, RESET))
+
+
+def cmd_next(events, note, plain):
+    n = now()
+    for e in events:
+        if e["when"] > n:
+            mins = int((e["when"] - n).total_seconds() // 60)
+            cd = "%dh %02dm" % divmod(mins, 60) if mins >= 60 else "%dm" % mins
+            body = "%s (%s) in %s — %s" % (
+                e["title"], e["currency"], cd, e["when"].astimezone().strftime("%a %H:%M"))
+            print(body if plain else "  %s%s%s" % (paint(e["impact"]), body, RESET))
+            return
+    msg = "no more events this week"
+    print(msg if plain else "  %s%s%s" % (FAINT, msg, RESET))
+    if note:
+        print(("  " if plain else "  %s" % DIM) + note + ("" if plain else RESET))
+
+
+def main():
+    args = sys.argv[1:]
+    as_json = "--json" in args
+    plain = "--plain" in args or as_json
+    allcur = "--all" in args
+    min_imp = "medium"
+    if "--impact" in args:
+        i = args.index("--impact")
+        if i + 1 < len(args):
+            min_imp = args[i + 1].lower()
+    cmd = next((a for a in args if not a.startswith("--")
+                and a not in (min_imp,)), "today")
+
+    if cmd == "next" and "--impact" not in args:
+        min_imp = "high"
+    raw, note = load_events()
+    if raw is None:
+        print(note, file=sys.stderr)
+        sys.exit(1)
+    currencies = ["ALL"] if allcur else cfg_currencies()
+    events = parse(raw, currencies, IMPACT_RANK.get(min_imp, 2))
+
+    if as_json:
+        n = now()
+        sel = events if cmd == "week" else [
+            e for e in events if e["when"].astimezone().date() == n.date()]
+        print(json.dumps({
+            "source": "forexfactory weekly feed",
+            "note": note,
+            "events": [{**e, "when": e["when"].isoformat()} for e in sel],
+        }, indent=2))
+        return
+
+    if cmd == "next":
+        cmd_next(events, note, plain)
+    elif cmd == "week":
+        if not plain:
+            print("%sTHE WEEK — economic calendar%s" % (BOLD + HEAD, RESET))
+        cmd_list(events, note, plain, today_only=False)
+    else:
+        if not plain:
+            print("%sTODAY — economic calendar%s" % (BOLD + HEAD, RESET))
+        cmd_list(events, note, plain, today_only=True)
+
+
+if __name__ == "__main__":
+    main()

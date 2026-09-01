@@ -150,6 +150,33 @@ def calendar_next():
     return best
 
 
+def feed_next():
+    """Next high-impact event from trade-cal's cached feed (no network here)."""
+    import json
+    cache = os.path.join(
+        os.environ.get("ALPHARCH_STATE", os.path.expanduser("~/.local/state/alpharch")),
+        "calendar", "ff-thisweek.json")
+    if not os.path.exists(cache):
+        return None
+    now = dt.datetime.now().astimezone()
+    best = None
+    try:
+        for e in json.load(open(cache)):
+            if str(e.get("impact", "")).lower() != "high":
+                continue
+            try:
+                t = dt.datetime.fromisoformat(e["date"])
+            except (KeyError, ValueError):
+                continue
+            if t > now and (best is None or t < best[0]):
+                best = (t, "%s (%s)" % (e.get("title", "?"), e.get("country", "?")))
+    except (OSError, ValueError):
+        return None
+    if best:
+        return (best[0].astimezone().replace(tzinfo=None), best[1])
+    return None
+
+
 def render():
     out = []
     now = dt.datetime.now(dt.timezone.utc)
@@ -170,7 +197,7 @@ def render():
             cd = f"{AMBER}opens in  {fmt_td(secs)}{RESET}"
         out.append(f"  {TEXT}{name:<12}{RESET} {state} {cd}  {FAINT}{now_tz.strftime('%H:%M %Z')}{RESET}")
     out.append(f"  {TEXT}{'CRYPTO':<12}{RESET} {UP}● OPEN  {RESET} {DIM}never closes · funding in {fmt_td(funding_next(now))}{RESET}")
-    ev = calendar_next()
+    ev = calendar_next() or feed_next()
     out.append(f"{FAINT}{'─' * 56}{RESET}")
     if ev:
         t, what = ev
@@ -193,7 +220,7 @@ def brief_lines():
         elif secs < 4 * 3600:
             opens.append(f"{name.split(' /')[0].split()[0]} opens in {fmt_td(secs)}")
     line1 = "  " + TEXT + " · ".join(opens[:4]) + RESET if opens else "  " + DIM + "all traditional sessions closed · crypto never is" + RESET
-    ev = calendar_next()
+    ev = calendar_next() or feed_next()
     if ev:
         t, what = ev
         secs = (t - dt.datetime.now()).total_seconds()

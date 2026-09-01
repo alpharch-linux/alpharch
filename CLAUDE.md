@@ -158,10 +158,21 @@ the once-a-day check → 1.4.0 the Hyperliquid adapter (US perps) + the cfg() in
 control (`trade-brain do`: NL → validated JSON → per-window control sockets in
 $ALPHARCH_STATE/ctl; engine VWAP + range bars; canvas zoom/pan/crosshair,
 status dot, VWAP line; `?` help overlay in terminal views; friendly waiting
-screens; The Line routes control sentences to `do`). Andrew's gh is authenticated here; git push is fine when
+screens; The Line routes control sentences to `do`) → 1.7.0 the economic
+calendar (`trade-cal` on ForexFactory's keyless weekly feed: today/week/next,
+1h cache; wired into The Daily, the clock, The Line and the Brain's context).
+Andrew's gh is authenticated here; git push is fine when
 he asks. Don't force-push, don't rewrite history.
 
 ## Known issues / roadmap (priority order)
+
+0. *(landed in 1.7.0)* Economic calendar: `trade-cal` on ForexFactory's
+   keyless weekly feed (nfs.faireconomy.media/ff_calendar_thisweek.json —
+   title/country/date/impact/forecast/previous, verified live Sep 2026).
+   Cache $ALPHARCH_STATE/calendar/, 1h politeness. Wired into trade-brief,
+   trade-clock (feed_next fallback), The Line (CAL/NEWS), and the Brain's
+   context (schedule only — the Brain must never invent what a release
+   printed). High impact = AMBER, never red: direction owns green/red.
 
 1. **First-run wow is broken:** new installs should land on The Pit + canvas,
    not the sparse footprint. Add an in-view `?` help key.
@@ -176,10 +187,14 @@ he asks. Don't force-push, don't rewrite history.
 4. Broker adapters, read-only first: IBKR (native Linux gateway) → Tradovate →
    Coinbase/Kraken → Rithmic (needs signed license). Execution only after
    read-only is proven. Never handle the user's credentials.
-5. Canvas: zoom/pan, crosshair, light-shade variant.
-6. Coinbase level2_batch book: verify it actually delivers without auth on a
+5. Canvas: light-shade variant (zoom/pan/crosshair DONE in 1.6.0).
+6. **Voice for the Narrator (opt-in):** pipe Brain output through a local TTS
+   engine (piper — offline, fits nothing-phones-home). A `--speak` flag on
+   debrief/ask/replay plus a config toggle. Text stays the default; voice is
+   an option, never a requirement. Andrew asked for this (Sep 2026).
+7. Coinbase level2_batch book: verify it actually delivers without auth on a
    US connection (dom/heat depend on it there).
-7. Eventually: installable ISO ("when it has earned it").
+8. Eventually: installable ISO ("when it has earned it").
 
 ## Hyperliquid — what the live API actually is (verified on this machine, v1.4.0)
 

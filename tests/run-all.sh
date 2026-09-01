@@ -10,6 +10,8 @@ rc=0
 echo
 ./tests/desk-control.sh || rc=1
 echo
+./tests/calendar.sh || rc=1
+echo
 ./tests/brain-fence.sh "${1:-}" || rc=1
 echo
 if [[ $rc -eq 0 ]]; then printf '\033[38;2;70;179;123mALL SUITES PASSED\033[0m\n'
