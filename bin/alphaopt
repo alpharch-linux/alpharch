@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""
+alphaopt — Alpharch options flow, v1
+
+Live crypto options flow from Deribit's public API. No keys, no account.
+This is the options market the crypto boys actually trade — and its data
+is free, which the equity options world (OPRA) is not. Equity/index
+options flow stays honestly out until someone plugs in a paid feed.
+
+  VIEWS (press the key live, or start with --view)
+    t  tape     live options prints — strike, side, size, premium, IV
+    m  map      open-interest map by strike — walls, max pain, gamma density
+    s  summary  put/call ratios, top OI strikes, totals
+
+  alphaopt                     BTC options
+  alphaopt --currency ETH
+  alphaopt --view map
+
+Numbers on screen and where they come from:
+  OI, volume, IV      Deribit book summary (public REST, refreshed 60s)
+  prints              Deribit trades channel (public websocket)
+  gamma density       Black–Scholes gamma from mark IV × OI — a density,
+                      not a dealer-positioning claim. No sign assumptions.
+  max pain            strike minimizing intrinsic payout, front expiry
+
+Requires: python-websockets
+"""
+
+import argparse
+import asyncio
+import json
+import math
+import shutil
+import sys
+import termios
+import time
+import tty
+import os
+import urllib.request
+from collections import defaultdict, deque
+
+AMBER = "\033[38;2;232;163;61m"
+UP    = "\033[38;2;70;179;123m"
+DOWN  = "\033[38;2;220;80;87m"
+TEXT  = "\033[38;2;198;207;223m"
+DIM   = "\033[38;2;125;135;152m"
+FAINT = "\033[38;2;85;96;112m"
+HEAD  = "\033[38;2;237;241;248m"
+BOLD  = "\033[1m"
+RESET = "\033[0m"
+CLEAR = "\033[2J\033[H"
+HIDE  = "\033[?25l"
+SHOW  = "\033[?25h"
+
+# follow the active Omarchy theme (same contract as alphad)
+def _theme_colors():
+    path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+    if os.environ.get("ALPHARCH_NO_THEME") or not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        for ln in open(path):
+            ln = ln.split("#", 1)[0] if not ln.strip().startswith("#") else ""
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                v = v.strip().strip('"')
+                if v.startswith("#") and len(v) == 7:
+                    out[k.strip()] = tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
+    except OSError:
+        return {}
+    return out
+
+
+_tc = _theme_colors()
+if _tc:
+    _fg = lambda rgb: "\033[38;2;%d;%d;%dm" % rgb
+    AMBER = _fg(_tc.get("accent", (232, 163, 61)))
+    UP    = _fg(_tc.get("green", (70, 179, 123)))
+    DOWN  = _fg(_tc.get("red", (220, 80, 87)))
+    TEXT  = _fg(_tc.get("foreground", (198, 207, 223)))
+    DIM   = _fg(_tc.get("dark_foreground", _tc.get("muted", (125, 135, 152))))
+    FAINT = _fg(_tc.get("muted", (85, 96, 112)))
+    HEAD  = _fg(_tc.get("bright_foreground", _tc.get("foreground", (237, 241, 248))))
+
+MONTHS = {m: i + 1 for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])}
+
+
+def fnum(x, dp=1):
+    if x >= 1_000_000:
+        return f"{x/1e6:.{dp}f}M"
+    if x >= 1_000:
+        return f"{x/1e3:.{dp}f}K"
+    return f"{x:.{dp}f}"
+
+
+def visible_len(s):
+    out, i, n = 0, 0, len(s)
+    while i < n:
+        if s[i] == "\033":
+            while i < n and s[i] != "m":
+                i += 1
+            i += 1
+        else:
+            out += 1
+            i += 1
+    return out
+
+
+def bar(v, vmax, width, ch="█"):
+    if vmax <= 0:
+        return ""
+    return ch * int(round(width * min(v, vmax) / vmax))
+
+
+def parse_instrument(name):
+    """BTC-27MAR26-70000-C -> (expiry_ts, strike, 'C')"""
+    try:
+        _, dt, strike, cp = name.split("-")
+        day = int(dt[:-5])
+        mon = MONTHS[dt[-5:-2]]
+        yr = 2000 + int(dt[-2:])
+        exp = time.mktime((yr, mon, day, 8, 0, 0, 0, 0, -1))  # 08:00 UTC-ish; fine for T
+        return exp, float(strike), cp
+    except Exception:
+        return None, None, None
+
+
+def bs_gamma(S, K, T, iv):
+    if S <= 0 or K <= 0 or T <= 0 or iv <= 0:
+        return 0.0
+    d1 = (math.log(S / K) + 0.5 * iv * iv * T) / (iv * math.sqrt(T))
+    return math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) / (S * iv * math.sqrt(T))
+
+
+class OptState:
+    def __init__(self):
+        self.spot = 0.0
+        self.chain = []            # rows from book summary
+        self.chain_ts = 0.0
+        self.tape = deque(maxlen=300)
+        self.premiums = deque(maxlen=400)
+        self.err = ""
+
+    # ── chain analytics ───────────────────────────────────────────────────
+    def by_strike(self):
+        """strike -> {call_oi, put_oi, gamma_density}"""
+        now = time.time()
+        agg = defaultdict(lambda: [0.0, 0.0, 0.0])
+        for r in self.chain:
+            exp, K, cp = parse_instrument(r.get("instrument_name", ""))
+            if K is None:
+                continue
+            oi = float(r.get("open_interest") or 0)
+            iv = float(r.get("mark_iv") or 0) / 100.0
+            T = max((exp - now) / (365 * 86400), 1e-6)
+            g = bs_gamma(self.spot, K, T, iv) * oi if iv > 0 else 0.0
+            if cp == "C":
+                agg[K][0] += oi
+            else:
+                agg[K][1] += oi
+            agg[K][2] += g
+        return dict(agg)
+
+    def front_expiry(self):
+        """expiry with the largest OI"""
+        tot = defaultdict(float)
+        for r in self.chain:
+            exp, K, cp = parse_instrument(r.get("instrument_name", ""))
+            if K is not None:
+                tot[exp] += float(r.get("open_interest") or 0)
+        return max(tot, key=tot.get) if tot else None
+
+    def max_pain(self):
+        exp = self.front_expiry()
+        if exp is None:
+            return None, None
+        rows = []
+        for r in self.chain:
+            e, K, cp = parse_instrument(r.get("instrument_name", ""))
+            if e == exp and K is not None:
+                rows.append((K, cp, float(r.get("open_interest") or 0)))
+        strikes = sorted({K for K, _, _ in rows})
+        best, best_pain = None, float("inf")
+        for s in strikes:
+            pain = sum(oi * max(0, s - K) if cp == "C" else oi * max(0, K - s)
+                       for K, cp, oi in rows)
+            if pain < best_pain:
+                best, best_pain = s, pain
+        return best, exp
+
+    def pcr(self):
+        c_oi = p_oi = c_v = p_v = 0.0
+        for r in self.chain:
+            _, K, cp = parse_instrument(r.get("instrument_name", ""))
+            if K is None:
+                continue
+            oi = float(r.get("open_interest") or 0)
+            v = float(r.get("volume") or 0)
+            if cp == "C":
+                c_oi += oi; c_v += v
+            else:
+                p_oi += oi; p_v += v
+        return (p_oi / c_oi if c_oi else 0), (p_v / c_v if c_v else 0), c_oi, p_oi
+
+    def is_big(self, prem):
+        if len(self.premiums) < 30:
+            return prem > 250_000
+        mean = sum(self.premiums) / len(self.premiums)
+        return prem >= 8 * mean
+
+
+# ── views ──────────────────────────────────────────────────────────────────
+def short_name(name):
+    try:
+        _, dt, strike, cp = name.split("-")
+        k = float(strike)
+        return f"{dt:<7} {fnum(k,0):>5}{cp}"
+    except Exception:
+        return name
+
+
+def render_tape(st, w, h, cur):
+    out = []
+    if not st.tape:
+        out.append(f"{DIM}waiting for options prints… (deribit {cur} options){RESET}")
+        return "\n".join(out)
+    n = h - 7
+    pmax = max((x["prem"] for x in st.tape), default=1)
+    for x in reversed(list(st.tape)[-n:]):
+        col = UP if x["dir"] == "buy" else DOWN
+        cpcol = UP if x["cp"] == "C" else DOWN
+        big = f"{AMBER}◆{RESET}" if st.is_big(x["prem"]) else " "
+        out.append(
+            f"  {FAINT}{time.strftime('%H:%M:%S', time.localtime(x['ts']))}{RESET}  "
+            f"{cpcol}{short_name(x['name']):>15}{RESET}  "
+            f"{col}{x['dir'].upper():<4}{RESET} {TEXT}{x['amt']:>7.1f}{RESET}  "
+            f"{HEAD}${fnum(x['prem'],1):>7}{RESET} {DIM}prem{RESET}  "
+            f"{DIM}{x['iv']:.0f}iv{RESET} {col}{bar(x['prem'], pmax, max(8, w - 74))}{RESET} {big}")
+    return "\n".join(out)
+
+
+def render_map(st, w, h, cur):
+    agg = st.by_strike()
+    if not agg or not st.spot:
+        return f"{DIM}{st.err or 'loading the chain…'}{RESET}"
+    strikes = sorted(agg, reverse=True)
+    maxrows = h - 9
+    # window around spot
+    near = sorted(strikes, key=lambda k: abs(k - st.spot))[:maxrows]
+    near = sorted(near, reverse=True)
+    oi_max = max(max(c, p) for c, p, _ in agg.values()) or 1
+    g_max = max(g for _, _, g in agg.values()) or 1
+    mp, mp_exp = st.max_pain()
+    half = max(8, (w - 40) // 2)
+    out = [f"  {DIM}{'calls OI':>{half}}   strike   {'puts OI':<{half}}  γ·OI{RESET}"]
+    for K in near:
+        c, p, g = agg[K]
+        cbar = bar(c, oi_max, half)
+        pbar = bar(p, oi_max, half)
+        gbar = bar(g, g_max, 8, "▌")
+        tag = ""
+        if mp and abs(K - mp) < 1:
+            tag = f" {AMBER}◀ max pain{RESET}"
+        is_spot = abs(K - st.spot) == min(abs(k - st.spot) for k in near)
+        klabel = f"{AMBER}{BOLD}{fnum(K,0):>7}{RESET}" if is_spot else f"{TEXT}{fnum(K,0):>7}{RESET}"
+        out.append(f"  {UP}{cbar:>{half}}{RESET} {klabel} {DOWN}{pbar:<{half}}{RESET} {FAINT}{gbar}{RESET}{tag}")
+    if mp:
+        out.append("")
+        out.append(f"  {DIM}spot {AMBER}{fnum(st.spot,0)}{RESET}{DIM} · max pain {AMBER}{fnum(mp,0)}{RESET}{DIM}"
+                   f" (front expiry {time.strftime('%d %b', time.localtime(mp_exp))})"
+                   f" · γ·OI = BS gamma × OI, a density — not dealer positioning{RESET}")
+    return "\n".join(out)
+
+
+def render_summary(st, w, h, cur):
+    if not st.chain:
+        return f"{DIM}{st.err or 'loading the chain…'}{RESET}"
+    pcr_oi, pcr_v, c_oi, p_oi = st.pcr()
+    agg = st.by_strike()
+    walls = sorted(agg.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:6]
+    mp, mp_exp = st.max_pain()
+    out = []
+    out.append(f"  {HEAD}{BOLD}{cur} OPTIONS · deribit · {len(st.chain)} live instruments{RESET}")
+    out.append("")
+    pcr_col = DOWN if pcr_oi > 1 else UP
+    out.append(f"  {DIM}put/call OI{RESET}   {pcr_col}{pcr_oi:.2f}{RESET}     {DIM}put/call vol (24h){RESET}  {(DOWN if pcr_v > 1 else UP)}{pcr_v:.2f}{RESET}")
+    out.append(f"  {DIM}call OI{RESET}       {UP}{fnum(c_oi)}{RESET}      {DIM}put OI{RESET}             {DOWN}{fnum(p_oi)}{RESET}")
+    if mp:
+        out.append(f"  {DIM}max pain{RESET}      {AMBER}{fnum(mp,0)}{RESET}   {DIM}(front expiry {time.strftime('%d %b %y', time.localtime(mp_exp))}){RESET}")
+    out.append(f"  {DIM}spot{RESET}          {TEXT}{fnum(st.spot,0)}{RESET}")
+    out.append("")
+    out.append(f"  {DIM}the walls — biggest OI strikes{RESET}")
+    oi_max = (walls[0][1][0] + walls[0][1][1]) if walls else 1
+    for K, (c, p, g) in walls:
+        out.append(f"    {TEXT}{fnum(K,0):>7}{RESET}  {UP}{bar(c, oi_max, 18)}{RESET}{DOWN}{bar(p, oi_max, 18)}{RESET}"
+                   f"  {DIM}{fnum(c + p)} ({fnum(c)}C/{fnum(p)}P){RESET}")
+    out.append("")
+    big = [x for x in st.tape if st.is_big(x["prem"])][-4:]
+    if big:
+        out.append(f"  {DIM}recent size{RESET}")
+        for x in big:
+            col = UP if x["dir"] == "buy" else DOWN
+            out.append(f"    {FAINT}{time.strftime('%H:%M', time.localtime(x['ts']))}{RESET} "
+                       f"{col}{x['dir'].upper()}{RESET} {TEXT}{short_name(x['name'])}{RESET} "
+                       f"{HEAD}${fnum(x['prem'])}{RESET} {DIM}prem · {x['iv']:.0f}iv{RESET}")
+    return "\n".join(out)
+
+
+VIEWS = {"tape": render_tape, "map": render_map, "summary": render_summary}
+KEYMAP = {"t": "tape", "m": "map", "s": "summary"}
+
+
+# ── feeds ──────────────────────────────────────────────────────────────────
+def fetch_chain(cur):
+    url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={cur}&kind=option"
+    req = urllib.request.Request(url, headers={"User-Agent": "alpharch"})
+    data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    return data.get("result", [])
+
+
+def fetch_spot(cur):
+    url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={cur.lower()}_usd"
+    req = urllib.request.Request(url, headers={"User-Agent": "alpharch"})
+    data = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    return float(data["result"]["index_price"])
+
+
+async def chain_poll(st, cur):
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            st.spot = await loop.run_in_executor(None, fetch_spot, cur)
+            st.chain = await loop.run_in_executor(None, fetch_chain, cur)
+            st.chain_ts = time.time()
+            st.err = ""
+        except Exception as ex:
+            st.err = f"deribit REST unreachable ({type(ex).__name__}) — retrying"
+        await asyncio.sleep(60)
+
+
+async def trades_feed(st, cur):
+    import websockets
+    url = "wss://www.deribit.com/ws/api/v2"
+    sub = {"jsonrpc": "2.0", "id": 1, "method": "public/subscribe",
+           "params": {"channels": [f"trades.option.{cur}.100ms"]}}
+    async for ws in websockets.connect(url, ping_interval=20, max_size=2**23):
+        try:
+            await ws.send(json.dumps(sub))
+            async for raw in ws:
+                msg = json.loads(raw)
+                params = msg.get("params", {})
+                for tr in params.get("data", []) or []:
+                    name = tr.get("instrument_name", "")
+                    idx = float(tr.get("index_price") or st.spot or 0)
+                    amt = float(tr.get("amount") or 0)
+                    prem = float(tr.get("price") or 0) * idx * amt
+                    x = {"ts": tr.get("timestamp", time.time() * 1000) / 1000,
+                         "name": name, "dir": tr.get("direction", ""),
+                         "amt": amt, "prem": prem,
+                         "iv": float(tr.get("iv") or 0),
+                         "cp": name.rsplit("-", 1)[-1]}
+                    st.tape.append(x)
+                    st.premiums.append(prem)
+        except Exception:
+            await asyncio.sleep(3)
+            continue
+
+
+# ── ui ─────────────────────────────────────────────────────────────────────
+def header(st, cur, view, w):
+    left = f"{BOLD}{HEAD}{cur} OPTIONS{RESET}  {AMBER}{fnum(st.spot,0) if st.spot else '—'}{RESET}  {DIM}deribit · free public data{RESET}"
+    right = f"{DIM}{view} · {time.strftime('%H:%M:%S')}{RESET}"
+    pad = max(1, w - visible_len(left) - visible_len(right))
+    return left + " " * pad + right
+
+
+async def ui(st, args, state):
+    while True:
+        w, h = shutil.get_terminal_size()
+        view = state["view"]
+        try:
+            body = VIEWS[view](st, w, h, args.currency)
+        except Exception as ex:
+            body = f"{DOWN}render error in {view}: {ex}{RESET}"
+        keys = f"{DIM}t{FAINT}ape  {DIM}m{FAINT}ap  {DIM}s{FAINT}ummary  {DIM}q{FAINT}uit{RESET}"
+        frame = (header(st, args.currency, view, w) + "\n" + f"{FAINT}{'─' * w}{RESET}\n"
+                 + body + "\n" + f"{FAINT}{'─' * w}{RESET}\n" + keys)
+        sys.stdout.write(CLEAR + frame + "\n")
+        sys.stdout.flush()
+        await asyncio.sleep(args.refresh)
+
+
+def setup_keys(state, loop):
+    if not sys.stdin.isatty():
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def on_key():
+        ch = os.read(fd, 1).decode(errors="ignore")
+        if ch == "q":
+            loop.stop()
+        elif ch in KEYMAP:
+            state["view"] = KEYMAP[ch]
+
+    loop.add_reader(fd, on_key)
+    return old
+
+
+async def main_async(args):
+    st = OptState()
+    state = {"view": args.view}
+    loop = asyncio.get_event_loop()
+    old_tty = setup_keys(state, loop)
+    try:
+        await asyncio.gather(chain_poll(st, args.currency), trades_feed(st, args.currency), ui(st, args, state))
+    finally:
+        if old_tty:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_tty)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="alphaopt — Alpharch options flow (Deribit, free)")
+    ap.add_argument("--currency", choices=["BTC", "ETH"], default="BTC")
+    ap.add_argument("--view", choices=list(VIEWS), default="tape")
+    ap.add_argument("--refresh", type=float, default=1.0)
+    args = ap.parse_args()
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        print("alphaopt needs python-websockets:  sudo pacman -S python-websockets")
+        sys.exit(1)
+    sys.stdout.write(HIDE)
+    try:
+        asyncio.run(main_async(args))
+    except (KeyboardInterrupt, RuntimeError):
+        pass
+    finally:
+        sys.stdout.write(SHOW + RESET + "\n")
+
+
+if __name__ == "__main__":
+    main()

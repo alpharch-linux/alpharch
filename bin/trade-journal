@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# trade-journal — a plain-Markdown trading journal. Your data, your files.
+#
+#   trade-journal today          open (create) today's entry in $EDITOR
+#   trade-journal note "..."     append a timestamped line to today
+#   trade-journal capture        screenshot the focused window into today
+#   trade-journal week           concatenate the last 7 days for review
+#   trade-journal ls             list entries
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+today_file() { printf '%s/%s.md' "$ALPHARCH_JOURNAL" "$(date +%F)"; }
+
+new_entry() {
+  local f; f="$(today_file)"
+  [[ -f "$f" ]] && return
+  cat > "$f" <<EOF
+# $(date '+%A, %B %-d %Y')
+
+## Plan
+- Bias:
+- A-setup:
+- No-trade window:
+
+## Notes
+
+## Trades
+
+## Debrief
+- What the market did:
+- What I did:
+- Rule adherence:
+EOF
+  ok "New journal entry → $f"
+}
+
+case "${1:-today}" in
+  today|open|"")
+    new_entry
+    exec "${EDITOR:-nvim}" "$(today_file)" ;;
+  note)
+    shift; new_entry
+    printf -- '- %s  %s\n' "$(date +%H:%M:%S)" "$*" >> "$(today_file)"
+    ok "logged" ;;
+  capture|shot)
+    new_entry
+    dir="$ALPHARCH_JOURNAL/shots"; mkdir -p "$dir"
+    img="$dir/$(date +%F_%H%M%S).png"
+    if have grim && have hyprctl; then
+      # grab the focused window's region (Omarchy ships grim/slurp)
+      geom="$(hyprctl -j activewindow 2>/dev/null | grep -oE '"at": *\[[0-9-]+, *[0-9-]+\]|"size": *\[[0-9]+, *[0-9]+\]')"
+      grim "$img" 2>/dev/null && {
+        printf -- '- %s  ![capture](shots/%s)\n' "$(date +%H:%M:%S)" "$(basename "$img")" >> "$(today_file)"
+        ok "captured → $img"
+      } || err "grim failed"
+    else
+      err "grim/hyprctl not available for capture"
+    fi ;;
+  week|review)
+    head_ "LAST 7 DAYS"
+    for d in $(seq 0 6); do
+      f="$ALPHARCH_JOURNAL/$(date -d "-$d day" +%F 2>/dev/null || date -v-"$d"d +%F).md"
+      [[ -f "$f" ]] && { amber "── $(basename "$f") ──"; cat "$f"; echo; }
+    done ;;
+  ls|list)
+    head_ "JOURNAL"; ls -1 "$ALPHARCH_JOURNAL"/*.md 2>/dev/null | sed 's#.*/##' || dim "no entries yet" ;;
+  *) err "usage: trade-journal [today|note|capture|week|ls]"; exit 1 ;;
+esac

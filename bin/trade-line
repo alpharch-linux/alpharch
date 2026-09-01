@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# trade-line — The Line. Bloomberg taught the world that a terminal is
+# driven, not clicked: ticker, function, GO. This is Alpharch's command bar.
+#
+#   SUPER+ALT+A   (or run `trade-line` anywhere)
+#
+#   btc            → order flow on BTC
+#   btc heat       → liquidity heatmap on BTC
+#   eth dom        → depth ladder on ETH
+#   btc perp       → perp flow: liqs, funding, OI
+#   opt            → options tape (deribit)
+#   opt map        → OI map by strike, max pain
+#   desk / jrnl / brief / clock / focus / light / dark / shot
+#
+# Anything you type that isn't in the list still parses: SYMBOL [FUNCTION].
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+TERM_LAUNCH() {
+  if have omarchy-launch-terminal; then omarchy-launch-terminal "$@"
+  elif have alacritty; then alacritty -e "$@" &
+  elif have foot; then foot "$@" &
+  else "$@"; fi
+}
+
+catalog() {
+cat <<'EOF'
+BTC            order flow — footprint · tape · CVD
+BTC HEAT       liquidity heatmap — the book through time
+BTC DOM        depth ladder — walls and resting size
+BTC PERP       perp flow — liquidations · funding · OI
+BTC PROFILE    session volume profile — POC and value area
+BTC CANVAS     the flow canvas — candles into the fog, real pixels
+ETH            order flow on ETH
+SOL            order flow on SOL
+OPT            options tape — live prints (deribit BTC)
+OPT MAP        options OI map — strikes · walls · max pain
+OPT SUM        options summary — put/call · top OI
+ETH OPT        ETH options tape
+DESK           open the trading desk (all workspaces)
+JRNL           today's journal entry
+BRIEF          The Daily — morning sheet
+CLOCK          session clock — opens, closes, countdowns
+FOCUS          do-not-disturb toggle
+LIGHT          The Pit, white — prospectus mode
+DARK           The Pit, dark
+SHOT           capture the screen into today's journal
+MARKETS        the full market picker
+EOF
+}
+
+pick() {
+  if have fuzzel && in_hypr; then
+    catalog | fuzzel --dmenu -p "❯ " -l 20 --width 62 2>/dev/null
+  elif have fzf; then
+    catalog | fzf --prompt="❯ " --height=50% --reverse --print-query | tail -1
+  else
+    err "trade-line needs fuzzel (in Hyprland) or fzf"; exit 1
+  fi
+}
+
+LINE="${*:-$(pick)}"
+[[ -z "$LINE" ]] && exit 0
+
+# normalize: first token = subject, second = function
+set -- $LINE
+SUBJ="$(tr '[:lower:]' '[:upper:]' <<<"${1:-}")"
+FUNC="$(tr '[:lower:]' '[:upper:]' <<<"${2:-}")"
+
+sym_for() { # crypto shorthand -> configured exchange symbol
+  local ex; ex="$(cfg exchange coinbase)"
+  case "$ex" in
+    binance) printf '%sUSDT' "$1" ;;
+    *)       printf '%s-USD' "$1" ;;
+  esac
+}
+
+run_flow() { # symbol view [market]
+  local sym="$1" view="${2:-flow}" market="${3:-spot}" ex
+  ex="$(cfg exchange coinbase)"
+  # perp streams are binance-only; book views try the configured exchange
+  # first and alphad says plainly if that feed has no public book.
+  if [[ "$market" == perp ]]; then ex="binance"; sym="${sym%-USD}"; sym="${sym%USDT}USDT"; fi
+  TERM_LAUNCH alphad --exchange "$ex" --market "$market" --symbol "$sym" --view "$view" \
+    --tick "$(cfg tick 10)" --bucket "$(cfg bucket 60)"
+}
+
+case "$SUBJ" in
+  DESK)    exec trade-desk open ;;
+  JRNL|JOURNAL) TERM_LAUNCH trade-journal today ;;
+  BRIEF|BRF)    TERM_LAUNCH bash -c 'trade-brief; read -n1 -s' ;;
+  CLOCK|CLK)    TERM_LAUNCH bash -c 'trade-clock --watch' ;;
+  FOCUS|FCS)    exec trade-focus ;;
+  LIGHT)   exec trade-shade light ;;
+  DARK)    exec trade-shade dark ;;
+  SHOT)    exec trade-journal capture ;;
+  CANVAS)  setsid alphad --canvas >/dev/null 2>&1 & ;;
+  MARKETS) exec trade-symbol ;;
+  OPT|OPTS|OPTIONS)
+    case "$FUNC" in
+      MAP)  TERM_LAUNCH alphaopt --view map ;;
+      SUM*) TERM_LAUNCH alphaopt --view summary ;;
+      *)    TERM_LAUNCH alphaopt ;;
+    esac ;;
+  BTC|ETH|SOL|XRP|DOGE)
+    if [[ "$FUNC" == "OPT" || "$FUNC" == "OPTIONS" ]]; then
+      TERM_LAUNCH alphaopt --currency "$SUBJ"
+    elif [[ "$FUNC" == "PERP" ]]; then
+      run_flow "${SUBJ}USDT" liqs perp
+    elif [[ "$FUNC" == "CANVAS" ]]; then
+      ex="$(cfg exchange coinbase)"
+      setsid alphad --exchange "$ex" --symbol "$(sym_for "$SUBJ")" --canvas >/dev/null 2>&1 &
+    else
+      view="$(tr '[:upper:]' '[:lower:]' <<<"${FUNC:-flow}")"
+      [[ "$view" =~ ^(flow|dom|heat|tape|profile|liqs)$ ]] || view=flow
+      run_flow "$(sym_for "$SUBJ")" "$view"
+    fi ;;
+  ES|NQ|RTY|CL|GC|ZN)
+    notify "Futures depth" "$SUBJ needs a paid feed (Rithmic/Databento). Crypto is live free — try BTC."
+    ;;
+  *)
+    # unknown token: try it as a raw symbol on the configured exchange
+    run_flow "$SUBJ" "$(tr '[:upper:]' '[:lower:]' <<<"${FUNC:-flow}")" ;;
+esac

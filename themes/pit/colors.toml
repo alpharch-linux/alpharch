@@ -1,0 +1,37 @@
+mode = "dark"
+
+# The Pit — Alpharch's house theme.
+# Amber is attention. Green and red are direction, and only direction.
+
+accent = "#e8a33d"
+selection = "#2e2410"
+muted = "#556070"
+
+background = "#0a0d14"
+dark_background = "#070a10"
+darker_background = "#04060b"
+lighter_background = "#0e1220"
+
+foreground = "#c6cfdf"
+dark_foreground = "#7d8798"
+light_foreground = "#c6cfdf"
+bright_foreground = "#edf1f8"
+
+active_border_color = "#e8a33d"
+active_tab_background = "#b97f2a"
+
+red = "#dc5057"
+yellow = "#e8a33d"
+orange = "#d98c2e"
+green = "#46b37b"
+cyan = "#6ea3c9"
+blue = "#5c87b8"
+magenta = "#a583c9"
+brown = "#8a6a3a"
+
+bright_red = "#e97b80"
+bright_yellow = "#f2bd6a"
+bright_green = "#6cc99a"
+bright_cyan = "#93c1de"
+bright_blue = "#82a8d0"
+bright_magenta = "#c0a4dd"

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# trade-brief — The Daily, v1: an honest morning sheet from free data.
+# Pulls spot crypto prices (Coinbase public API), your journal's open thread,
+# and today's calendar notes, and prints a Pit-styled desk sheet.
+#
+#   trade-brief            print it
+#   trade-brief --save     also append to today's journal
+#
+# What it does NOT do yet (on purpose): GEX, futures levels, options flow —
+# those need paid feeds. This brief never fakes a number it doesn't have.
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+WATCH="$(cfg watchlist "BTC-USD ETH-USD SOL-USD")"
+
+spot() { # symbol -> price via Coinbase public spot API
+  curl -sf --max-time 5 "https://api.coinbase.com/v2/prices/$1/spot" 2>/dev/null \
+    | grep -oE '"amount":"[0-9.]+"' | cut -d'"' -f4
+}
+
+line() { printf '%b%s%b\n' "${PIT_FAINT}" "────────────────────────────────────────────────" "${PIT_RESET}"; }
+
+OUT="$(
+  printf '%b%s — THE DAILY%b\n' "${PIT_BOLD}${PIT_HEAD}" "$(date '+%a %b %-d %Y' | tr '[:lower:]' '[:upper:]')" "${PIT_RESET}"
+  printf '%bgenerated %s · alpharch v1 · free-tier data%b\n' "${PIT_DIM}" "$(date +%H:%M:%S)" "${PIT_RESET}"
+  line
+  printf '%bWATCHLIST%b\n' "${PIT_AMBER}" "${PIT_RESET}"
+  for s in $WATCH; do
+    p="$(spot "$s")"
+    if [[ -n "$p" ]]; then
+      printf '  %b%-10s%b %b%14s%b\n' "${PIT_HEAD}" "$s" "${PIT_RESET}" "${PIT_TEXT}" "$(printf '%.2f' "$p" 2>/dev/null || echo "$p")" "${PIT_RESET}"
+    else
+      printf '  %b%-10s%b %bno data (offline?)%b\n' "${PIT_HEAD}" "$s" "${PIT_RESET}" "${PIT_FAINT}" "${PIT_RESET}"
+    fi
+  done
+  line
+  printf '%bFROM YOUR JOURNAL%b\n' "${PIT_AMBER}" "${PIT_RESET}"
+  Y="$ALPHARCH_JOURNAL/$(date -d yesterday +%F 2>/dev/null || date -v-1d +%F).md"
+  if [[ -f "$Y" ]]; then
+    sed -n '/## Debrief/,$p' "$Y" | tail -n +2 | grep -v '^\s*$' | head -6 \
+      | sed "s/^/  /" || true
+  else
+    printf '  %bno entry yesterday — the streak starts today%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+  fi
+  line
+  printf '%bSESSIONS%b\n' "${PIT_AMBER}" "${PIT_RESET}"
+  trade-clock --brief 2>/dev/null || printf '  %btrade-clock unavailable%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+  line
+  printf '%bCALENDAR%b\n' "${PIT_AMBER}" "${PIT_RESET}"
+  CAL="$ALPHARCH_HOME/calendar.txt"
+  if [[ -f "$CAL" ]]; then
+    grep -i "^$(date +%a)\|^$(date +%F)\|^\*" "$CAL" 2>/dev/null | sed 's/^/  /' \
+      || printf '  %bnothing marked for today%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+  else
+    printf '  %badd events to %s (lines like: %s 08:30 CPI)%b\n' "${PIT_FAINT}" "$CAL" "$(date +%a)" "${PIT_RESET}"
+  fi
+  line
+  printf '%btools, never signals · your plan is yours%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+)"
+
+printf '%s\n' "$OUT"
+
+if [[ "${1:-}" == "--save" ]]; then
+  f="$ALPHARCH_JOURNAL/$(date +%F).md"
+  [[ -f "$f" ]] || trade-journal note "brief generated" >/dev/null 2>&1 || true
+  { echo; echo '## The Daily (auto)'; echo '```'; printf '%s\n' "$OUT" | sed 's/\x1b\[[0-9;]*m//g'; echo '```'; } >> "$f"
+  ok "saved to journal"
+fi

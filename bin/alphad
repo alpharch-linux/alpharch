@@ -1,0 +1,987 @@
+#!/usr/bin/env python3
+"""
+alphad — the Alpharch flow engine, v2
+
+Every order-flow situation, one engine, switchable views. Live from free
+public exchange websockets: no API keys, no accounts, no subscriptions.
+
+  VIEWS (press the key live, or start with --view)
+    f  flow      footprint — volume at price per time bucket, delta, imbalances
+    d  dom       depth ladder — resting liquidity, walls, session profile
+    h  heat      liquidity heatmap — the book through time (Bookmap, in a tty)
+    t  tape      time & sales — prints, speed, big-print flags, CVD
+    p  profile   session volume profile — POC, value area, delta per level
+    l  liqs      liquidations + funding (binance perp only)
+
+  FEEDS
+    --exchange coinbase                spot trades + level2 book (if public)
+    --exchange binance                 spot trades + top-20 book
+    --exchange binance --market perp   perp trades + book + liqs + funding + OI
+
+  REPLAY (drill your reads on recorded tape)
+    alphad --record ~/tapes/nfp-day.jsonl          # record while watching
+    alphad --replay ~/tapes/nfp-day.jsonl --speed 4
+
+Honest by construction: every number on screen comes from the feed named in
+the header. Nothing is modeled, delayed-and-relabeled, or made up.
+
+Requires: python-websockets (sudo pacman -S python-websockets)
+"""
+
+import argparse
+import asyncio
+import json
+import math
+import os
+import shutil
+import sys
+import termios
+import time
+import tty
+import urllib.request
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+
+# ── The Pit ────────────────────────────────────────────────────────────────
+AMBER = "\033[38;2;232;163;61m"
+UP    = "\033[38;2;70;179;123m"
+DOWN  = "\033[38;2;220;80;87m"
+TEXT  = "\033[38;2;198;207;223m"
+DIM   = "\033[38;2;125;135;152m"
+FAINT = "\033[38;2;85;96;112m"
+HEAD  = "\033[38;2;237;241;248m"
+BOLD  = "\033[1m"
+RESET = "\033[0m"
+CLEAR = "\033[2J\033[H"
+HIDE  = "\033[?25l"
+SHOW  = "\033[?25h"
+
+# ── follow the active Omarchy theme ────────────────────────────────────────
+# `omarchy-theme-set <anything>` reskins alphad too. ALPHARCH_NO_THEME=1 forces Pit.
+def _theme_colors():
+    path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+    if os.environ.get("ALPHARCH_NO_THEME") or not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        for ln in open(path):
+            ln = ln.split("#", 1)[0] if not ln.strip().startswith("#") else ""
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                v = v.strip().strip('"')
+                if v.startswith("#") and len(v) == 7:
+                    out[k.strip()] = tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
+    except OSError:
+        return {}
+    return out
+
+
+def _fg(rgb):
+    return "\033[38;2;%d;%d;%dm" % rgb
+
+
+_tc = _theme_colors()
+if _tc:
+    AMBER = _fg(_tc.get("accent", (232, 163, 61)))
+    UP    = _fg(_tc.get("green", (70, 179, 123)))
+    DOWN  = _fg(_tc.get("red", (220, 80, 87)))
+    TEXT  = _fg(_tc.get("foreground", (198, 207, 223)))
+    DIM   = _fg(_tc.get("dark_foreground", _tc.get("muted", (125, 135, 152))))
+    FAINT = _fg(_tc.get("muted", (85, 96, 112)))
+    HEAD  = _fg(_tc.get("bright_foreground", _tc.get("foreground", (237, 241, 248))))
+
+# accent intensity ramp for the heatmap (theme bg → accent → near-white)
+def _lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+_BG = _tc.get("background", (10, 13, 20))
+_AM = _tc.get("accent", (232, 163, 61))
+_HOT = _lerp(_AM, (245, 242, 235), 0.75)
+HEAT_RAMP = (
+    [f"\033[38;2;{r};{g};{b}m" for r, g, b in (_lerp(_BG, _AM, t) for t in (0.18, 0.36, 0.55, 0.75, 1.0))]
+    + [f"\033[38;2;{r};{g};{b}m" for r, g, b in (_lerp(_AM, _HOT, t) for t in (0.5, 1.0))]
+)
+HEAT_CH = "░▒▓█████"
+
+
+def fnum(x, dp=2):
+    if x >= 1_000_000:
+        return f"{x/1e6:.{dp}f}M"
+    if x >= 1_000:
+        return f"{x/1e3:.{dp}f}K"
+    return f"{x:.{dp}f}"
+
+
+def fpx(p):
+    return f"{p:,.2f}" if p < 10000 else f"{p:,.0f}"
+
+
+def clock(ts=None):
+    return time.strftime("%H:%M:%S", time.localtime(ts or time.time()))
+
+
+# ── data ───────────────────────────────────────────────────────────────────
+@dataclass
+class Trade:
+    ts: float
+    price: float
+    size: float
+    aggressor: str  # "buy" | "sell": the side that crossed the spread
+
+
+@dataclass
+class Liq:
+    ts: float
+    side: str       # "long" | "short": which position got liquidated
+    price: float
+    qty: float
+
+
+@dataclass
+class Bucket:
+    start: float
+    bid_vol: dict = field(default_factory=lambda: defaultdict(float))  # sell aggressors
+    ask_vol: dict = field(default_factory=lambda: defaultdict(float))  # buy aggressors
+    open_px: float = 0.0
+    high: float = 0.0
+    low: float = float("inf")
+    close: float = 0.0
+    trades: int = 0
+
+    @property
+    def delta(self):
+        return sum(self.ask_vol.values()) - sum(self.bid_vol.values())
+
+    @property
+    def volume(self):
+        return sum(self.ask_vol.values()) + sum(self.bid_vol.values())
+
+    def poc(self):
+        tot = defaultdict(float)
+        for p, v in self.ask_vol.items():
+            tot[p] += v
+        for p, v in self.bid_vol.items():
+            tot[p] += v
+        return max(tot, key=tot.get) if tot else None
+
+
+class Engine:
+    """All market state. Feeds push events in; views read it out."""
+
+    def __init__(self, tick, bucket_secs, large_mult, imb_ratio):
+        self.tick = tick
+        self.bucket_secs = bucket_secs
+        self.large_mult = large_mult
+        self.imb_ratio = imb_ratio
+
+        self.last = 0.0
+        self.session_open = None
+        self.session_high = 0.0
+        self.session_low = float("inf")
+        self.n_trades = 0
+        self.started = time.time()
+
+        self.buckets = deque(maxlen=48)
+        self.cur = None
+
+        self.tape = deque(maxlen=400)
+        self.big_prints = deque(maxlen=40)
+        self.sizes = deque(maxlen=600)
+        self.rate_win = deque(maxlen=2000)          # trade timestamps
+
+        self.cvd = 0.0
+        self.cvd_series = deque(maxlen=600)         # (ts, cvd, price)
+
+        self.profile = defaultdict(lambda: [0.0, 0.0])  # grid px -> [buy, sell]
+
+        # book
+        self.bids = {}
+        self.asks = {}
+        self.book_ok = False
+        self.book_note = ""
+        self.heat = deque(maxlen=600)               # (ts, mid, {gridpx: qty}, last, aggr, big)
+        self._heat_last = 0.0
+
+        # perp extras
+        self.liqs = deque(maxlen=200)
+        self.liq_long = 0.0
+        self.liq_short = 0.0
+        self.funding = None                          # (rate, next_ts)
+        self.oi = None                               # (value, ts)
+        self.oi_open = None
+
+        self.notes = deque(maxlen=6)                # absorption/divergence flags
+        self.event_ts = None                        # feed time (replay-aware)
+
+    # ── ingest ────────────────────────────────────────────────────────────
+    def grid(self, p):
+        return round(p / self.tick) * self.tick
+
+    def on_trade(self, t: Trade):
+        self.event_ts = t.ts
+        self.n_trades += 1
+        self.last = t.price
+        if self.session_open is None:
+            self.session_open = t.price
+        self.session_high = max(self.session_high, t.price)
+        self.session_low = min(self.session_low, t.price)
+
+        self.tape.append(t)
+        self.sizes.append(t.size)
+        self.rate_win.append(t.ts)
+
+        signed = t.size if t.aggressor == "buy" else -t.size
+        self.cvd += signed
+        self.cvd_series.append((t.ts, self.cvd, t.price))
+
+        g = self.grid(t.price)
+        self.profile[g][0 if t.aggressor == "buy" else 1] += t.size
+
+        if self.cur is None or t.ts - self.cur.start >= self.bucket_secs:
+            self._close_bucket()
+            self.cur = Bucket(start=t.ts - (t.ts % self.bucket_secs), open_px=t.price)
+        b = self.cur
+        b.close = t.price
+        b.high = max(b.high, t.price)
+        b.low = min(b.low, t.price)
+        b.trades += 1
+        (b.ask_vol if t.aggressor == "buy" else b.bid_vol)[g] += t.size
+
+        if self.is_big(t.size):
+            self.big_prints.append(t)
+
+    def is_big(self, size):
+        if len(self.sizes) < 40:
+            return False
+        mean = sum(self.sizes) / len(self.sizes)
+        return size >= self.large_mult * mean
+
+    def _close_bucket(self):
+        if self.cur is None:
+            return
+        b = self.cur
+        self.buckets.append(b)
+        # absorption: heavy volume, tight range
+        if len(self.buckets) >= 6:
+            vols = [x.volume for x in list(self.buckets)[-6:-1]]
+            rngs = [x.high - x.low for x in list(self.buckets)[-6:-1] if x.high >= x.low]
+            if vols and rngs:
+                if b.volume > 1.8 * (sum(vols) / len(vols)) and (b.high - b.low) < 0.6 * (sum(rngs) / len(rngs)):
+                    side = "bid" if b.delta < 0 else "ask"
+                    self.notes.append((b.start, f"absorption at {fpx(b.close)} — heavy volume, no travel ({side} absorbing)"))
+        # cvd divergence: price high, cvd not
+        if len(self.buckets) >= 8:
+            xs = list(self.buckets)[-8:]
+            px_hi = max(x.high for x in xs)
+            if b.high >= px_hi and b.delta < 0:
+                self.notes.append((b.start, f"divergence — new high {fpx(b.high)} on negative delta"))
+
+    def on_book(self, bids, asks, replace=True):
+        if replace:
+            self.bids = dict(bids)
+            self.asks = dict(asks)
+        else:
+            for p, q in bids:
+                if q <= 0:
+                    self.bids.pop(p, None)
+                else:
+                    self.bids[p] = q
+            for p, q in asks:
+                if q <= 0:
+                    self.asks.pop(p, None)
+                else:
+                    self.asks[p] = q
+        self.book_ok = bool(self.bids) and bool(self.asks)
+        now = self.event_ts or time.time()
+        if self.book_ok and now - self._heat_last >= 1.0:
+            self._heat_last = now
+            col = defaultdict(float)
+            for p, q in list(self.bids.items()) + list(self.asks.items()):
+                col[self.grid(p)] += q
+            lastt = self.tape[-1] if self.tape else None
+            self.heat.append((
+                now, self.mid(), dict(col),
+                lastt.price if lastt else self.last,
+                lastt.aggressor if lastt else "",
+                bool(lastt and self.is_big(lastt.size)),
+                lastt.size if lastt else 0.0,
+            ))
+
+    def mid(self):
+        if self.bids and self.asks:
+            return (max(self.bids) + min(self.asks)) / 2
+        return self.last
+
+    def on_liq(self, lq: Liq):
+        self.liqs.append(lq)
+        if lq.side == "long":
+            self.liq_long += lq.qty
+        else:
+            self.liq_short += lq.qty
+
+    def rate(self, secs=10):
+        cut = time.time() - secs
+        return sum(1 for ts in self.rate_win if ts >= cut) / secs
+
+    def delta_last(self, secs):
+        cut = time.time() - secs
+        d = 0.0
+        for t in self.tape:
+            if t.ts >= cut:
+                d += t.size if t.aggressor == "buy" else -t.size
+        return d
+
+    def value_area(self):
+        """POC + 70% value area from the session profile."""
+        if not self.profile:
+            return None, None, None
+        tot = {p: b + s for p, (b, s) in self.profile.items()}
+        poc = max(tot, key=tot.get)
+        target = 0.70 * sum(tot.values())
+        got = tot[poc]
+        lo = hi = poc
+        prices = sorted(tot)
+        i, j = prices.index(poc), prices.index(poc)
+        while got < target and (i > 0 or j < len(prices) - 1):
+            up_v = tot[prices[j + 1]] if j < len(prices) - 1 else -1
+            dn_v = tot[prices[i - 1]] if i > 0 else -1
+            if up_v >= dn_v:
+                j += 1
+                hi = prices[j]
+                got += up_v
+            else:
+                i -= 1
+                lo = prices[i]
+                got += dn_v
+        return poc, lo, hi
+
+
+# ── view helpers ───────────────────────────────────────────────────────────
+def header(eng, feedname, symbol, viewname, w):
+    chg = ""
+    if eng.session_open:
+        pct = (eng.last - eng.session_open) / eng.session_open * 100
+        col = UP if pct >= 0 else DOWN
+        chg = f"{col}{pct:+.2f}%{RESET}"
+    left = (f"{BOLD}{HEAD}{symbol}{RESET}  {AMBER}{fpx(eng.last) if eng.last else '—'}{RESET}  {chg}"
+            f"  {DIM}H {fpx(eng.session_high) if eng.session_high else '—'} · L {fpx(eng.session_low) if eng.session_low < 1e18 else '—'}{RESET}")
+    right = f"{DIM}{feedname} · {viewname} · {clock()}{RESET}"
+    pad = max(1, w - visible_len(left) - visible_len(right))
+    return left + " " * pad + right
+
+
+def footer(w, extra=""):
+    keys = (f"{DIM}f{FAINT}low  {DIM}d{FAINT}om  {DIM}h{FAINT}eat  {DIM}t{FAINT}ape  "
+            f"{DIM}p{FAINT}rofile  {DIM}l{FAINT}iqs  {DIM}+/-{FAINT} tick  {DIM}q{FAINT}uit{RESET}")
+    line = keys + ("   " + extra if extra else "")
+    return f"{FAINT}{'─' * w}{RESET}\n" + line
+
+
+def visible_len(s):
+    out, i, n = 0, 0, len(s)
+    while i < n:
+        if s[i] == "\033":
+            while i < n and s[i] != "m":
+                i += 1
+            i += 1
+        else:
+            out += 1
+            i += 1
+    return out
+
+
+def bar(v, vmax, width, ch="█"):
+    if vmax <= 0:
+        return ""
+    n = int(round(width * min(v, vmax) / vmax))
+    return ch * n
+
+
+# ── views ──────────────────────────────────────────────────────────────────
+def render_flow(eng, w, h):
+    """Footprint: rows = price grid, cols = time buckets, bid×ask per cell."""
+    out = []
+    buckets = list(eng.buckets)[-max(1, (w - 12) // 14):] + ([eng.cur] if eng.cur else [])
+    if not buckets:
+        return f"{DIM}waiting for trades…{RESET}"
+    prices = set()
+    for b in buckets:
+        prices |= set(b.ask_vol) | set(b.bid_vol)
+    if not prices:
+        return f"{DIM}waiting for trades…{RESET}"
+    prices = sorted(prices, reverse=True)
+    maxrows = h - 9
+    if len(prices) > maxrows:
+        mid = eng.grid(eng.last)
+        prices = [p for p in prices if abs(p - mid) <= (maxrows // 2) * eng.tick]
+    cell_max = max(max(list(b.ask_vol.values()) + list(b.bid_vol.values()) + [0.001]) for b in buckets)
+    hdr = " " * 11 + "".join(f"{DIM}{time.strftime('%H:%M', time.localtime(b.start)):>14}{RESET}" for b in buckets)
+    out.append(hdr)
+    for p in prices:
+        row = f"{FAINT}{fpx(p):>10}{RESET} "
+        for b in buckets:
+            bv, av = b.bid_vol.get(p, 0.0), b.ask_vol.get(p, 0.0)
+            if bv == 0 and av == 0:
+                row += " " * 14
+                continue
+            # imbalance tint (diagonal-ish: per-level ratio in v-terminal)
+            bcol = DOWN if bv >= eng.imb_ratio * max(av, 0.001) else TEXT
+            acol = UP if av >= eng.imb_ratio * max(bv, 0.001) else TEXT
+            poc_mark = AMBER + "▏" + RESET if b.poc() == p else " "
+            row += f"{poc_mark}{bcol}{fnum(bv,1):>5}{RESET}{FAINT}×{RESET}{acol}{fnum(av,1):<5}{RESET}  "
+        out.append(row)
+    # delta / volume strip
+    drow = f"{DIM}{'Δ':>10}{RESET} "
+    vrow = f"{DIM}{'vol':>10}{RESET} "
+    for b in buckets:
+        col = UP if b.delta >= 0 else DOWN
+        drow += f" {col}{fnum(abs(b.delta),1):>12}{RESET} "
+        vrow += f" {FAINT}{fnum(b.volume,1):>12}{RESET} "
+    out.append(f"{FAINT}{'─' * min(w, 11 + 14 * len(buckets))}{RESET}")
+    out.append(drow)
+    out.append(vrow)
+    cvd_col = UP if eng.cvd >= 0 else DOWN
+    out.append(f"{DIM}CVD {cvd_col}{fnum(abs(eng.cvd),1)}{RESET}{DIM} · 1m Δ {fnum(eng.delta_last(60),1)} · rate {eng.rate():.1f}/s{RESET}")
+    for ts, note in list(eng.notes)[-2:]:
+        out.append(f"{AMBER}◆ {clock(ts)} {note}{RESET}")
+    return "\n".join(out)
+
+
+def render_dom(eng, w, h):
+    """Ladder: asks above, bids below, walls flagged, session profile shadow."""
+    if not eng.book_ok:
+        msg = eng.book_note or "no book on this feed — DOM needs --exchange binance (spot or perp)"
+        return f"{DIM}{msg}{RESET}"
+    depth = min(((h - 8) // 2), 16)
+    asks = sorted(eng.asks.items())[:depth]
+    bids = sorted(eng.bids.items(), reverse=True)[:depth]
+    allq = [q for _, q in asks + bids]
+    qmax = max(allq) if allq else 1
+    med = sorted(allq)[len(allq) // 2] if allq else 0
+    prof_max = max((b + s for b, s in eng.profile.values()), default=0)
+    barw = max(10, (w - 46) // 2)
+    out = []
+    lastt = eng.tape[-1] if eng.tape else None
+
+    def prof_bar(p):
+        b_, s_ = eng.profile.get(eng.grid(p), (0.0, 0.0))
+        n = int(round(12 * min(b_ + s_, prof_max) / prof_max)) if prof_max else 0
+        return f"{FAINT}{'▍' * n}{RESET}" + " " * (12 - n)
+
+    def ladder_row(p, q, aggr_side, mark_glyph, mark_col):
+        wall = f"{AMBER}⚑{RESET}" if med and q > 3 * med else " "
+        mark = f"{mark_col}{mark_glyph}{RESET}" if lastt and lastt.aggressor == aggr_side and abs(lastt.price - p) < eng.tick / 2 else " "
+        return (f"  {prof_bar(p)}  {TEXT}{fpx(p):>10}{RESET} {DIM}{fnum(q,1):>8}{RESET} "
+                f"{FAINT}{bar(q, qmax, barw)}{RESET} {wall}{mark}")
+
+    for p, q in reversed(asks):
+        out.append(ladder_row(p, q, "sell", "◀", DOWN))
+    spread = (min(eng.asks) - max(eng.bids)) if eng.book_ok else 0
+    out.append(f"  {' ' * 12}  {AMBER}{'─' * 10}{RESET} {DIM}spread {spread:.2f}{RESET}")
+    for p, q in bids:
+        out.append(ladder_row(p, q, "buy", "▶", UP))
+    bidsum = sum(q for _, q in bids)
+    asksum = sum(q for _, q in asks)
+    tot = bidsum + asksum or 1
+    out.append("")
+    out.append(f"  {DIM}book pressure{RESET}  {UP}{bar(bidsum, tot, 20, '■')}{RESET}{DOWN}{bar(asksum, tot, 20, '■')}{RESET}  {DIM}{bidsum/tot*100:.0f}% bid{RESET}")
+    cvd_col = UP if eng.cvd >= 0 else DOWN
+    out.append(f"  {DIM}CVD {cvd_col}{fnum(abs(eng.cvd),1)}{RESET}{DIM} · Δ1m {fnum(eng.delta_last(60),1)} · {eng.rate():.1f} trades/s · ⚑ = wall (>3× median){RESET}")
+    return "\n".join(out)
+
+
+def render_heat(eng, w, h):
+    """The book through time. Structure stays visible; true walls burn white-hot.
+    Prints ride the path as volume-graded bubbles: · ● and ▲▼ for size."""
+    if not eng.heat:
+        msg = eng.book_note or "no book on this feed — heat needs --exchange binance (spot or perp)"
+        return f"{DIM}{msg}{RESET}"
+    cols = list(eng.heat)[-(w - 12):]
+    rows = h - 7
+    center = cols[-1][1]
+    top = eng.grid(center) + (rows // 2) * eng.tick
+    # percentile reference: one monster wall must not dim the whole book
+    allq = sorted(q for c in cols for q in c[2].values() if q > 0)
+    if not allq:
+        return f"{DIM}book warming up…{RESET}"
+    qref = allq[int(len(allq) * 0.90)] or 1
+    mean_sz = (sum(eng.sizes) / len(eng.sizes)) if eng.sizes else 0
+    n_body = len(HEAT_RAMP) - 2                     # body of the ramp
+    out = []
+    for r in range(rows):
+        p = top - r * eng.tick
+        line = f"{FAINT}{fpx(p):>10}{RESET} "
+        for (ts, mid, col, lastp, aggr, big, sz) in cols:
+            q = col.get(p, 0.0)
+            if abs(lastp - p) < eng.tick / 2:
+                pc = UP if aggr == "buy" else DOWN if aggr == "sell" else HEAD
+                if big:
+                    line += pc + ("▲" if aggr == "buy" else "▼") + RESET
+                elif mean_sz and sz >= 2 * mean_sz:
+                    line += pc + "●" + RESET
+                else:
+                    line += pc + "·" + RESET
+            elif q > 0:
+                if q >= 3 * qref:                   # a true wall: white-hot streak
+                    i = len(HEAT_RAMP) - 1
+                else:
+                    i = min(n_body - 1, int(n_body * min(q / qref, 1.0) ** 0.6))
+                line += HEAT_RAMP[i] + HEAT_CH[i] + RESET
+            else:
+                line += " "
+        out.append(line)
+    out.append(f"{DIM}{'':>10} liquidity fades with size · white-hot = wall (3×) · "
+               f"{UP}·{RESET}{DIM}{UP}●{RESET}{DIM}{UP}▲{RESET}{DIM}/{DOWN}▼{RESET}{DIM} prints by volume · 1 col/s{RESET}")
+    return "\n".join(out)
+
+
+def render_tape(eng, w, h):
+    out = []
+    r = eng.rate()
+    heat = min(1.0, r / 20)
+    out.append(f"  {DIM}speed{RESET} {AMBER}{bar(heat, 1.0, 30, '■')}{RESET}{FAINT}{'□' * (30 - int(30*heat))}{RESET} {DIM}{r:.1f}/s{RESET}"
+               f"   {DIM}CVD{RESET} {(UP if eng.cvd >= 0 else DOWN)}{fnum(abs(eng.cvd),1)}{RESET}"
+               f"   {DIM}Δ1m{RESET} {(UP if eng.delta_last(60) >= 0 else DOWN)}{fnum(abs(eng.delta_last(60)),1)}{RESET}")
+    out.append("")
+    n = h - 8
+    trades = list(eng.tape)[-n:]
+    smax = max((t.size for t in trades), default=1)
+    for t in reversed(trades):
+        col = UP if t.aggressor == "buy" else DOWN
+        big = f"{AMBER}◆{RESET}" if eng.is_big(t.size) else " "
+        out.append(f"  {FAINT}{clock(t.ts)}{RESET}  {col}{fpx(t.price):>10}{RESET}  {TEXT}{fnum(t.size,3):>9}{RESET} {col}{bar(t.size, smax, max(10, w - 50))}{RESET} {big}")
+    return "\n".join(out)
+
+
+def render_profile(eng, w, h):
+    if not eng.profile:
+        return f"{DIM}building the session profile…{RESET}"
+    poc, val, vah = eng.value_area()
+    tot = {p: b + s for p, (b, s) in eng.profile.items()}
+    prices = sorted(tot, reverse=True)
+    maxrows = h - 8
+    if len(prices) > maxrows:
+        mid = eng.grid(eng.last)
+        prices = [p for p in prices if abs(p - mid) <= (maxrows // 2) * eng.tick]
+    vmax = max(tot.values())
+    barw = max(12, w - 48)
+    out = [f"  {DIM}session profile · POC {AMBER}{fpx(poc)}{RESET}{DIM} · value area {fpx(val)} – {fpx(vah)}{RESET}", ""]
+    for p in prices:
+        b_, s_ = eng.profile[p]
+        d = b_ - s_
+        dcol = UP if d >= 0 else DOWN
+        tag = f"{AMBER}◀ POC{RESET}" if p == poc else (f"{DIM}◁ VA{RESET}" if p in (val, vah) else "")
+        inva = val is not None and val <= p <= vah
+        bcol = TEXT if inva else FAINT
+        cur = f"{HEAD}●{RESET}" if abs(p - eng.grid(eng.last)) < eng.tick / 2 else " "
+        out.append(f" {cur}{FAINT}{fpx(p):>10}{RESET} {bcol}{bar(b_ + s_, vmax, barw)}{RESET} {DIM}{fnum(b_ + s_,1):>7}{RESET} {dcol}{'+' if d>=0 else '−'}{fnum(abs(d),1):<7}{RESET} {tag}")
+    return "\n".join(out)
+
+
+def render_liqs(eng, w, h):
+    out = []
+    if eng.funding:
+        rate, nxt = eng.funding
+        left = max(0, nxt - time.time())
+        hh, mm = int(left // 3600), int(left % 3600 // 60)
+        rcol = UP if rate >= 0 else DOWN
+        out.append(f"  {DIM}funding{RESET} {rcol}{rate*100:+.4f}%{RESET} {DIM}· next in {hh:02d}:{mm:02d}{RESET}"
+                   + (f"   {DIM}OI{RESET} {TEXT}{fnum(eng.oi[0],1)}{RESET}"
+                      + (f" {DIM}({'+' if eng.oi[0]-eng.oi_open>=0 else ''}{fnum(eng.oi[0]-eng.oi_open,1)} since open){RESET}" if eng.oi_open else "")
+                      if eng.oi else ""))
+    else:
+        out.append(f"  {DIM}liquidations, funding and OI live on binance perp:  alphad --exchange binance --market perp{RESET}")
+    tot = eng.liq_long + eng.liq_short
+    if tot > 0:
+        out.append(f"  {DIM}liquidated{RESET}  {DOWN}longs {fnum(eng.liq_long,1)}{RESET} {DOWN}{bar(eng.liq_long, tot, 18, '■')}{RESET}"
+                   f"{UP}{bar(eng.liq_short, tot, 18, '■')}{RESET} {UP}shorts {fnum(eng.liq_short,1)}{RESET}")
+    out.append("")
+    n = h - 9
+    for lq in reversed(list(eng.liqs)[-n:]):
+        col = DOWN if lq.side == "long" else UP
+        out.append(f"  {FAINT}{clock(lq.ts)}{RESET}  {col}{lq.side.upper():>5} LIQ{RESET}  {TEXT}{fpx(lq.price):>10}{RESET}  {col}{fnum(lq.qty,3)}{RESET}")
+    if not eng.liqs:
+        out.append(f"  {DIM}no liquidations yet — quiet tape is information too{RESET}")
+    return "\n".join(out)
+
+
+VIEWS = {
+    "flow": render_flow, "dom": render_dom, "heat": render_heat,
+    "tape": render_tape, "profile": render_profile, "liqs": render_liqs,
+}
+KEYMAP = {"f": "flow", "d": "dom", "h": "heat", "t": "tape", "p": "profile", "l": "liqs"}
+# live tick-size adjustment: + coarser, - finer (heat/flow/profile grids)
+
+
+# ── recorder / replay ──────────────────────────────────────────────────────
+class Recorder:
+    def __init__(self, path):
+        self.f = open(path, "a", buffering=1)
+        self._book_last = 0.0
+
+    def trade(self, t: Trade):
+        self.f.write(json.dumps({"k": "t", "ts": t.ts, "p": t.price, "s": t.size, "a": t.aggressor}) + "\n")
+
+    def book(self, bids, asks):
+        now = time.time()
+        if now - self._book_last < 1.0:
+            return
+        self._book_last = now
+        top_b = sorted(bids.items(), reverse=True)[:15]
+        top_a = sorted(asks.items())[:15]
+        self.f.write(json.dumps({"k": "b", "ts": now, "bids": top_b, "asks": top_a}) + "\n")
+
+    def liq(self, lq: Liq):
+        self.f.write(json.dumps({"k": "l", "ts": lq.ts, "side": lq.side, "p": lq.price, "q": lq.qty}) + "\n")
+
+    def funding(self, rate, nxt):
+        self.f.write(json.dumps({"k": "f", "ts": time.time(), "r": rate, "n": nxt}) + "\n")
+
+
+async def replay_feed(eng, rec_path, speed, on_event):
+    with open(rec_path) as f:
+        lines = [json.loads(x) for x in f if x.strip()]
+    if not lines:
+        print("empty recording")
+        return
+    t0 = lines[0]["ts"]
+    wall0 = time.time()
+    for ev in lines:
+        wait = (ev["ts"] - t0) / speed - (time.time() - wall0)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        eng.event_ts = ev["ts"]
+        if ev["k"] == "t":
+            eng.on_trade(Trade(ev["ts"], ev["p"], ev["s"], ev["a"]))
+        elif ev["k"] == "b":
+            eng.on_book({float(p): q for p, q in ev["bids"]}, {float(p): q for p, q in ev["asks"]})
+        elif ev["k"] == "l":
+            eng.on_liq(Liq(ev["ts"], ev["side"], ev["p"], ev["q"]))
+        elif ev["k"] == "f":
+            eng.funding = (ev["r"], ev["n"])
+        on_event()
+    eng.notes.append((time.time(), "replay finished"))
+    await asyncio.sleep(3600)
+
+
+# ── live feeds ─────────────────────────────────────────────────────────────
+async def coinbase_feed(eng, symbol, rec, on_event):
+    import websockets
+    url = "wss://ws-feed.exchange.coinbase.com"
+    sub = {"type": "subscribe", "product_ids": [symbol], "channels": ["matches", "level2_batch"]}
+    async for ws in websockets.connect(url, ping_interval=20, max_size=2**23):
+        try:
+            await ws.send(json.dumps(sub))
+            async for raw in ws:
+                m = json.loads(raw)
+                typ = m.get("type")
+                if typ in ("match", "last_match"):
+                    aggr = "sell" if m["side"] == "buy" else "buy"  # side = maker side
+                    t = Trade(time.time(), float(m["price"]), float(m["size"]), aggr)
+                    eng.on_trade(t)
+                    rec and rec.trade(t)
+                    on_event()
+                elif typ == "snapshot":
+                    eng.on_book({float(p): float(q) for p, q in m.get("bids", [])[:200]},
+                                {float(p): float(q) for p, q in m.get("asks", [])[:200]})
+                elif typ == "l2update":
+                    bids, asks = [], []
+                    for side, p, q in m.get("changes", []):
+                        (bids if side == "buy" else asks).append((float(p), float(q)))
+                    eng.on_book(bids, asks, replace=False)
+                    rec and eng.book_ok and rec.book(eng.bids, eng.asks)
+                elif typ == "error":
+                    eng.book_note = "coinbase book: " + m.get("message", "unavailable") + " — trades still live; use binance for DOM/heat"
+        except Exception:
+            await asyncio.sleep(2)
+            continue
+
+
+async def binance_feed(eng, symbol, market, rec, on_event):
+    import websockets
+    s = symbol.lower()
+    if market == "perp":
+        streams = f"{s}@aggTrade/{s}@depth20@100ms/{s}@forceOrder/{s}@markPrice@1s"
+        url = f"wss://fstream.binance.com/stream?streams={streams}"
+    else:
+        streams = f"{s}@aggTrade/{s}@depth20@100ms"
+        url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+    async for ws in websockets.connect(url, ping_interval=20, max_size=2**23):
+        try:
+            async for raw in ws:
+                w = json.loads(raw)
+                d = w.get("data", w)
+                e = d.get("e", "")
+                if e == "aggTrade":
+                    aggr = "sell" if d["m"] else "buy"
+                    t = Trade(d["T"] / 1000, float(d["p"]), float(d["q"]), aggr)
+                    eng.on_trade(t)
+                    rec and rec.trade(t)
+                    on_event()
+                elif e == "forceOrder":
+                    o = d["o"]
+                    side = "long" if o["S"] == "SELL" else "short"
+                    lq = Liq(o["T"] / 1000, side, float(o.get("ap") or o["p"]), float(o["q"]))
+                    eng.on_liq(lq)
+                    rec and rec.liq(lq)
+                    on_event()
+                elif e == "markPriceUpdate":
+                    eng.funding = (float(d["r"]), d["T"] / 1000)
+                    rec and rec.funding(*eng.funding)
+                elif "bids" in d or "b" in d:
+                    bids = d.get("bids", d.get("b", []))
+                    asks = d.get("asks", d.get("a", []))
+                    eng.on_book({float(p): float(q) for p, q in bids},
+                                {float(p): float(q) for p, q in asks})
+                    rec and eng.book_ok and rec.book(eng.bids, eng.asks)
+        except Exception:
+            await asyncio.sleep(2)
+            continue
+
+
+async def oi_poll(eng, symbol):
+    loop = asyncio.get_event_loop()
+    url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol.upper()}"
+    while True:
+        try:
+            data = await loop.run_in_executor(None, lambda: json.loads(
+                urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "alpharch"}), timeout=8).read()))
+            v = float(data["openInterest"])
+            eng.oi = (v, time.time())
+            if eng.oi_open is None:
+                eng.oi_open = v
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
+# ── the flow canvas: real pixels, same engine ──────────────────────────────
+def canvas_snapshot(eng, args):
+    heat = [{"t": h[0], "mid": h[1], "cols": {str(k): round(v, 3) for k, v in h[2].items()},
+             "px": h[3], "aggr": h[4], "big": h[5], "sz": round(h[6], 4)} for h in eng.heat]
+    return json.dumps({
+        "symbol": args.symbol,
+        "feed": args.exchange + (" perp" if args.market == "perp" else ""),
+        "last": eng.last, "open": eng.session_open, "high": eng.session_high,
+        "low": eng.session_low if eng.session_low < 1e17 else None,
+        "tick": eng.tick, "cvd": round(eng.cvd, 3),
+        "buckets": [{"t": b.start, "o": b.open_px, "h": b.high, "l": b.low, "c": b.close,
+                     "v": round(b.volume, 3), "d": round(b.delta, 3)}
+                    for b in list(eng.buckets) + ([eng.cur] if eng.cur else [])],
+        "heat": heat,
+        "bigs": [{"t": t.ts, "p": t.price, "s": round(t.size, 4), "a": t.aggressor}
+                 for t in eng.big_prints],
+        "cvds": [{"t": c[0], "v": round(c[1], 3)} for c in eng.cvd_series],
+        "funding": {"rate": eng.funding[0], "next": eng.funding[1]} if eng.funding else None,
+        "oi": eng.oi[0] if eng.oi else None,
+    })
+
+
+def canvas_html_path():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.path.join(here, "..", "share", "canvas.html"),
+              os.path.expanduser("~/.local/share/alpharch/share/canvas.html")):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+async def canvas_server(eng, args):
+    import websockets
+    from http import HTTPStatus
+
+    html_path = canvas_html_path()
+    if not html_path:
+        print("canvas.html not found — reinstall alpharch")
+        return
+    page = open(html_path, "rb").read()
+
+    def process_request(a, b):
+        """Serve canvas.html over plain HTTP; let /ws upgrade to a websocket.
+        Handles both websockets APIs: >=13 (connection, request) and legacy
+        (path, request_headers)."""
+        if hasattr(b, "path"):               # new API: a=connection, b=Request
+            p = b.path.split("?")[0]
+            if p == "/ws":
+                return None
+            if p in ("/", "/index.html", "/canvas.html"):
+                r = a.respond(HTTPStatus.OK, "")
+                r.body = page
+                del r.headers["Content-Type"]
+                del r.headers["Content-Length"]
+                r.headers["Content-Type"] = "text/html; charset=utf-8"
+                r.headers["Content-Length"] = str(len(page))
+                r.headers["Cache-Control"] = "no-store"
+                return r
+            return a.respond(HTTPStatus.NOT_FOUND, "404")
+        p = a.split("?")[0]                  # legacy API: a=path, b=headers
+        if p == "/ws":
+            return None
+        if p in ("/", "/index.html", "/canvas.html"):
+            return (HTTPStatus.OK,
+                    [("Content-Type", "text/html; charset=utf-8"),
+                     ("Cache-Control", "no-store")], page)
+        return (HTTPStatus.NOT_FOUND, [], b"404")
+
+    clients = set()
+
+    async def handler(ws):
+        clients.add(ws)
+        try:
+            await ws.send(canvas_snapshot(eng, args))
+            async for _ in ws:
+                pass
+        finally:
+            clients.discard(ws)
+
+    async def broadcaster():
+        while True:
+            if clients:
+                msg = canvas_snapshot(eng, args)
+                await asyncio.gather(*(c.send(msg) for c in list(clients)),
+                                     return_exceptions=True)
+            await asyncio.sleep(1.0)
+
+    async with websockets.serve(handler, "127.0.0.1", args.port,
+                                process_request=process_request, max_size=2**22):
+        url = f"http://127.0.0.1:{args.port}"
+        print(f"{AMBER}alphad canvas{RESET} → {url}   (ctrl-c to stop)")
+        # open a bare app window if a chromium-family browser is around
+        for b in ("omarchy-launch-webapp", "chromium", "brave", "google-chrome-stable"):
+            import shutil as _sh
+            if _sh.which(b):
+                cmd = f"{b} {url}" if b == "omarchy-launch-webapp" else f"{b} --app={url}"
+                os.system(f"setsid {cmd} >/dev/null 2>&1 &")
+                break
+        await broadcaster()
+
+
+# ── ui loop ────────────────────────────────────────────────────────────────
+async def ui(eng, args, state):
+    feedname = ("replay×" + str(args.speed)) if args.replay else (
+        args.exchange + (" perp" if args.market == "perp" else ""))
+    while True:
+        w, h = shutil.get_terminal_size()
+        view = state["view"]
+        try:
+            body = VIEWS[view](eng, w, h)
+        except Exception as ex:
+            body = f"{DOWN}render error in {view}: {ex}{RESET}"
+        extra = f"{FAINT}{'REC ' + args.record if args.record else ''}{RESET}"
+        frame = (header(eng, feedname, args.symbol, view, w) + "\n"
+                 + f"{FAINT}{'─' * w}{RESET}\n" + body + "\n" + footer(w, extra))
+        sys.stdout.write(CLEAR + frame + "\n")
+        sys.stdout.flush()
+        await asyncio.sleep(args.refresh)
+
+
+def setup_keys(state, loop):
+    if not sys.stdin.isatty():
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def on_key():
+        ch = os.read(fd, 1).decode(errors="ignore")
+        if ch == "q":
+            loop.stop()
+        elif ch in KEYMAP:
+            state["view"] = KEYMAP[ch]
+        elif ch in "+=":
+            state["eng"].tick *= 2
+        elif ch == "-":
+            state["eng"].tick = max(state["eng"].tick / 2, 0.01)
+
+    loop.add_reader(fd, on_key)
+    return old
+
+
+async def main_async(args):
+    eng = Engine(args.tick, args.bucket, args.large, args.imbalance)
+    rec = Recorder(args.record) if args.record else None
+    state = {"view": args.view, "eng": eng}
+
+    def on_event():
+        pass
+
+    if args.json:
+        # raw event stream mode: print every trade as JSON, no UI
+        def on_event_json():
+            t = eng.tape[-1]
+            print(json.dumps({"ts": t.ts, "price": t.price, "size": t.size, "aggr": t.aggressor, "cvd": eng.cvd}), flush=True)
+        tasks = [feed_task(eng, args, rec, on_event_json)]
+        await asyncio.gather(*tasks)
+        return
+
+    if args.canvas:
+        tasks = [feed_task(eng, args, rec, on_event), canvas_server(eng, args)]
+        if args.exchange == "binance" and args.market == "perp" and not args.replay:
+            tasks.append(oi_poll(eng, args.symbol))
+        await asyncio.gather(*tasks)
+        return
+
+    loop = asyncio.get_event_loop()
+    old_tty = setup_keys(state, loop)
+    try:
+        tasks = [feed_task(eng, args, rec, on_event), ui(eng, args, state)]
+        if args.exchange == "binance" and args.market == "perp" and not args.replay:
+            tasks.append(oi_poll(eng, args.symbol))
+        await asyncio.gather(*tasks)
+    finally:
+        if old_tty:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_tty)
+
+
+def feed_task(eng, args, rec, on_event):
+    if args.replay:
+        return replay_feed(eng, args.replay, args.speed, on_event)
+    if args.exchange == "binance":
+        return binance_feed(eng, args.symbol, args.market, rec, on_event)
+    return coinbase_feed(eng, args.symbol, rec, on_event)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="alphad — the Alpharch flow engine")
+    ap.add_argument("--exchange", choices=["coinbase", "binance"], default="coinbase")
+    ap.add_argument("--market", choices=["spot", "perp"], default="spot",
+                    help="perp (binance only) adds liqs, funding, open interest")
+    ap.add_argument("--symbol", default=None, help="BTC-USD (coinbase) or BTCUSDT (binance)")
+    ap.add_argument("--view", choices=list(VIEWS), default="flow")
+    ap.add_argument("--tick", type=float, default=10.0, help="price grid size")
+    ap.add_argument("--bucket", type=int, default=60, help="footprint column seconds")
+    ap.add_argument("--large", type=float, default=8.0, help="big print = N × mean size")
+    ap.add_argument("--imbalance", type=float, default=3.0, help="imbalance ratio")
+    ap.add_argument("--refresh", type=float, default=0.5)
+    ap.add_argument("--record", metavar="FILE", help="append events to a JSONL tape")
+    ap.add_argument("--replay", metavar="FILE", help="replay a recorded tape")
+    ap.add_argument("--speed", type=float, default=1.0, help="replay speed multiple")
+    ap.add_argument("--json", action="store_true", help="raw trade stream on stdout")
+    ap.add_argument("--canvas", action="store_true",
+                    help="serve the flow canvas (real-pixel renderer) on localhost")
+    ap.add_argument("--port", type=int, default=7860, help="canvas port")
+    args = ap.parse_args()
+
+    if args.symbol is None:
+        args.symbol = "BTCUSDT" if args.exchange == "binance" else "BTC-USD"
+    if args.market == "perp" and args.exchange != "binance":
+        ap.error("--market perp requires --exchange binance")
+
+    if not args.replay:
+        try:
+            import websockets  # noqa: F401
+        except ImportError:
+            print("alphad needs python-websockets:  sudo pacman -S python-websockets")
+            sys.exit(1)
+
+    sys.stdout.write(HIDE)
+    try:
+        asyncio.run(main_async(args))
+    except (KeyboardInterrupt, RuntimeError):
+        pass
+    finally:
+        sys.stdout.write(SHOW + RESET + "\n")
+
+
+if __name__ == "__main__":
+    main()

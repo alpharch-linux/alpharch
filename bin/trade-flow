@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# trade-flow — live order flow on the current symbol.
+#
+#   trade-flow                     footprint on your default symbol
+#   trade-flow ETH-USD             another symbol
+#   trade-flow BTC-USD heat        start in a view: flow|dom|heat|tape|profile|liqs
+#
+# Views also switch live inside alphad: f/d/h/t/p/l, +/- for tick size.
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+EXCHANGE="$(cfg exchange coinbase)"
+SYMBOL="${1:-$(cfg default_symbol BTC-USD)}"
+VIEW="${2:-flow}"
+TICK="$(cfg tick 10)"
+BUCKET="$(cfg bucket 60)"
+
+# book views (dom/heat) try the configured exchange first; alphad says
+# plainly if that feed carries no public book, and binance is the fallback.
+
+if ! have alphad && ! [[ -x "$(dirname "$(readlink -f "$0")")/alphad" ]]; then
+  err "alphad not found on PATH."
+  exit 1
+fi
+
+exec alphad --exchange "$EXCHANGE" --symbol "$SYMBOL" --view "$VIEW" --tick "$TICK" --bucket "$BUCKET"

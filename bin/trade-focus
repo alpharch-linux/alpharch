@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# trade-focus — the anti-tilt switch. Silences notifications and the noise
+# apps so you can read the tape. Toggle: run once to arm, again to release.
+#
+#   trade-focus            toggle
+#   trade-focus on|off     force a state
+#   trade-focus status
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+FLAG="$ALPHARCH_STATE/focus.on"
+
+arm() {
+  : > "$FLAG"
+  # pause desktop notifications if the daemon supports it
+  have makoctl && makoctl set-mode do-not-disturb >/dev/null 2>&1
+  have dunstctl && dunstctl set-paused true >/dev/null 2>&1
+  # mark it in the bar via a state file others can read
+  printf 'FOCUS' > "$ALPHARCH_STATE/mode"
+  notify "Focus on" "Notifications muted. Read the tape."
+  ok "Focus armed."
+}
+
+release() {
+  rm -f "$FLAG"
+  have makoctl && makoctl set-mode default >/dev/null 2>&1
+  have dunstctl && dunstctl set-paused false >/dev/null 2>&1
+  printf '' > "$ALPHARCH_STATE/mode"
+  notify "Focus off" "Notifications restored."
+  ok "Focus released."
+}
+
+case "${1:-toggle}" in
+  on|arm)      arm ;;
+  off|release) release ;;
+  status)      [[ -f "$FLAG" ]] && amber "focus: ON" || dim "focus: off" ;;
+  toggle|"")   [[ -f "$FLAG" ]] && release || arm ;;
+  *) err "usage: trade-focus [on|off|status|toggle]"; exit 1 ;;
+esac

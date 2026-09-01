@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+trade-clock — the session clock. Which markets are open, which are next,
+and how long you have. All timezone math done properly (DST-safe).
+
+  trade-clock            print once
+  trade-clock --watch    live, 1s refresh
+"""
+
+import os
+import sys
+import time
+import datetime as dt
+from zoneinfo import ZoneInfo
+
+AMBER = "\033[38;2;232;163;61m"
+UP    = "\033[38;2;70;179;123m"
+TEXT  = "\033[38;2;198;207;223m"
+DIM   = "\033[38;2;125;135;152m"
+FAINT = "\033[38;2;85;96;112m"
+HEAD  = "\033[38;2;237;241;248m"
+BOLD  = "\033[1m"
+RESET = "\033[0m"
+CLEAR = "\033[2J\033[H"
+
+# follow the active Omarchy theme (same contract as alphad)
+_path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+if not os.environ.get("ALPHARCH_NO_THEME") and os.path.exists(_path):
+    try:
+        _tc = {}
+        for _ln in open(_path):
+            _ln = _ln.split("#", 1)[0] if not _ln.strip().startswith("#") else ""
+            if "=" in _ln:
+                _k, _v = _ln.split("=", 1)
+                _v = _v.strip().strip('"')
+                if _v.startswith("#") and len(_v) == 7:
+                    _tc[_k.strip()] = tuple(int(_v[i:i + 2], 16) for i in (1, 3, 5))
+        _fg = lambda rgb: "\033[38;2;%d;%d;%dm" % rgb
+        if _tc:
+            AMBER = _fg(_tc.get("accent", (232, 163, 61)))
+            UP    = _fg(_tc.get("green", (70, 179, 123)))
+            TEXT  = _fg(_tc.get("foreground", (198, 207, 223)))
+            DIM   = _fg(_tc.get("dark_foreground", _tc.get("muted", (125, 135, 152))))
+            FAINT = _fg(_tc.get("muted", (85, 96, 112)))
+            HEAD  = _fg(_tc.get("bright_foreground", _tc.get("foreground", (237, 241, 248))))
+    except OSError:
+        pass
+
+# name, tz, open (h,m), close (h,m), days open (0=Mon..6=Sun)
+SESSIONS = [
+    ("CME GLOBEX",  "America/Chicago",  (17, 0), (16, 0), None),  # special: Sun 17:00 → Fri 16:00, daily 60m break
+    ("NYSE / RTH",  "America/New_York", (9, 30), (16, 0), {0, 1, 2, 3, 4}),
+    ("LONDON",      "Europe/London",    (8, 0),  (16, 30), {0, 1, 2, 3, 4}),
+    ("TOKYO",       "Asia/Tokyo",       (9, 0),  (15, 0), {0, 1, 2, 3, 4}),
+]
+
+
+def fmt_td(seconds):
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h >= 24:
+        d, h = divmod(h, 24)
+        return f"{d}d {h:02d}h"
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def next_change(now_tz, open_hm, close_hm, days):
+    """(is_open, seconds_to_change) for a plain daily session."""
+    t_open = now_tz.replace(hour=open_hm[0], minute=open_hm[1], second=0, microsecond=0)
+    t_close = now_tz.replace(hour=close_hm[0], minute=close_hm[1], second=0, microsecond=0)
+    wd = now_tz.weekday()
+    if wd in days and t_open <= now_tz < t_close:
+        return True, (t_close - now_tz).total_seconds()
+    # find next open
+    probe = now_tz
+    for _ in range(8):
+        t_open_p = probe.replace(hour=open_hm[0], minute=open_hm[1], second=0, microsecond=0)
+        if probe.weekday() in days and t_open_p > now_tz:
+            return False, (t_open_p - now_tz).total_seconds()
+        probe = probe + dt.timedelta(days=1)
+        probe = probe.replace(hour=0, minute=0)
+    return False, 0
+
+
+def globex(now_ct):
+    """CME Globex: Sun 17:00 CT → Fri 16:00 CT, daily 16:00-17:00 halt."""
+    wd, hm = now_ct.weekday(), (now_ct.hour, now_ct.minute)
+    open_now = False
+    if wd == 5:                       # Saturday: closed
+        open_now = False
+    elif wd == 6:                     # Sunday: opens 17:00
+        open_now = hm >= (17, 0)
+    elif wd == 4:                     # Friday: closes 16:00
+        open_now = hm < (16, 0)
+    else:                             # Mon-Thu: halt 16:00-17:00
+        open_now = not ((16, 0) <= hm < (17, 0))
+    # seconds to next change
+    def at(day_off, h, m):
+        d = (now_ct + dt.timedelta(days=day_off)).replace(hour=h, minute=m, second=0, microsecond=0)
+        return (d - now_ct).total_seconds()
+    if open_now:
+        if wd == 4:
+            return True, at(0, 16, 0)
+        return True, at(0, 16, 0) if hm < (16, 0) else at(1, 16, 0)
+    else:
+        if wd == 5:
+            return False, at(1, 17, 0)
+        if wd == 6 and hm < (17, 0):
+            return False, at(0, 17, 0)
+        if wd == 4 and hm >= (16, 0):
+            return False, at(2, 17, 0)
+        return False, at(0, 17, 0)    # weekday halt: reopens 17:00 today
+
+
+def funding_next(now_utc):
+    """Perp funding marks: 00:00 / 08:00 / 16:00 UTC."""
+    for h in (0, 8, 16, 24):
+        mark = now_utc.replace(hour=h % 24, minute=0, second=0, microsecond=0)
+        if h == 24:
+            mark = mark + dt.timedelta(days=1)
+        if mark > now_utc:
+            return (mark - now_utc).total_seconds()
+    return 0
+
+
+def calendar_next():
+    """Next event from ~/.config/alpharch/calendar.txt (today's lines with HH:MM)."""
+    path = os.path.expanduser(os.environ.get("ALPHARCH_HOME", "~/.config/alpharch")) + "/calendar.txt"
+    if not os.path.exists(path):
+        return None
+    now = dt.datetime.now()
+    today_keys = {now.strftime("%a"), now.strftime("%F"), "*"}
+    best = None
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 3 or parts[0] not in today_keys:
+                continue
+            try:
+                h, m = map(int, parts[1].split(":"))
+            except ValueError:
+                continue
+            t = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if t > now and (best is None or t < best[0]):
+                best = (t, parts[2])
+    return best
+
+
+def render():
+    out = []
+    now = dt.datetime.now(dt.timezone.utc)
+    local = now.astimezone()
+    out.append(f"{BOLD}{HEAD}SESSION CLOCK{RESET}  {DIM}{local.strftime('%a %d %b · %H:%M:%S %Z')}{RESET}")
+    out.append(f"{FAINT}{'─' * 56}{RESET}")
+    for name, tz, o, c, days in SESSIONS:
+        now_tz = now.astimezone(ZoneInfo(tz))
+        if days is None:
+            is_open, secs = globex(now_tz)
+        else:
+            is_open, secs = next_change(now_tz, o, c, days)
+        if is_open:
+            state = f"{UP}● OPEN  {RESET}"
+            cd = f"{DIM}closes in {fmt_td(secs)}{RESET}"
+        else:
+            state = f"{FAINT}○ closed{RESET}"
+            cd = f"{AMBER}opens in  {fmt_td(secs)}{RESET}"
+        out.append(f"  {TEXT}{name:<12}{RESET} {state} {cd}  {FAINT}{now_tz.strftime('%H:%M %Z')}{RESET}")
+    out.append(f"  {TEXT}{'CRYPTO':<12}{RESET} {UP}● OPEN  {RESET} {DIM}never closes · funding in {fmt_td(funding_next(now))}{RESET}")
+    ev = calendar_next()
+    out.append(f"{FAINT}{'─' * 56}{RESET}")
+    if ev:
+        t, what = ev
+        secs = (t - dt.datetime.now()).total_seconds()
+        out.append(f"  {AMBER}◆ next: {what} in {fmt_td(secs)}{RESET}  {DIM}({t.strftime('%H:%M')}){RESET}")
+    else:
+        out.append(f"  {FAINT}no calendar events left today — add lines to ~/.config/alpharch/calendar.txt{RESET}")
+    return "\n".join(out)
+
+
+def brief_lines():
+    """Two compact lines for trade-brief."""
+    now = dt.datetime.now(dt.timezone.utc)
+    opens = []
+    for name, tz, o, c, days in SESSIONS:
+        now_tz = now.astimezone(ZoneInfo(tz))
+        is_open, secs = globex(now_tz) if days is None else next_change(now_tz, o, c, days)
+        if is_open:
+            opens.append(f"{name.split(' /')[0].split()[0]} open ({fmt_td(secs)} left)")
+        elif secs < 4 * 3600:
+            opens.append(f"{name.split(' /')[0].split()[0]} opens in {fmt_td(secs)}")
+    line1 = "  " + TEXT + " · ".join(opens[:4]) + RESET if opens else "  " + DIM + "all traditional sessions closed · crypto never is" + RESET
+    ev = calendar_next()
+    if ev:
+        t, what = ev
+        secs = (t - dt.datetime.now()).total_seconds()
+        line2 = f"  {AMBER}◆ next: {what} in {fmt_td(secs)} ({t.strftime('%H:%M')}){RESET}"
+    else:
+        line2 = f"  {FAINT}no calendar events left today{RESET}"
+    return line1 + "\n" + line2
+
+
+if __name__ == "__main__":
+    if "--brief" in sys.argv:
+        print(brief_lines())
+    elif "--watch" in sys.argv:
+        try:
+            sys.stdout.write("\033[?25l")
+            while True:
+                sys.stdout.write(CLEAR + render() + "\n" + f"{FAINT}q/ctrl-c to exit{RESET}\n")
+                sys.stdout.flush()
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sys.stdout.write("\033[?25h" + RESET + "\n")
+    else:
+        print(render())

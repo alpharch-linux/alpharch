@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Alpharch bootstrap — https://alpharch.org/install
+#
+#   curl -fsSL https://alpharch.org/install | bash
+#
+# Installs the Alpharch overlay on a stock Omarchy (or any Arch/Hyprland)
+# system: clones the repo, runs its installer, pulls the one dependency.
+# Reversible: ~/.local/share/alpharch/uninstall.sh removes every trace.
+
+set -euo pipefail
+
+AMBER=$'\033[38;2;232;163;61m'; UP=$'\033[38;2;70;179;123m'
+DIM=$'\033[38;2;125;135;152m'; RED=$'\033[38;2;220;80;87m'; R=$'\033[0m'
+
+REPO="https://github.com/alpharch-linux/alpharch.git"
+SRC="$HOME/.local/share/alpharch-src"
+
+printf '%b' "$AMBER"
+cat <<'EOF'
+        ▄▄▄▄▄▄▄      ▄█▄
+     ▄███████████▄▄  ███
+   ▄███▀▀     ▀▀████▄███
+  ███▀           ▀██████
+ ███               █████
+ ███▄              █████
+  ███▄           ▄███████
+   ▀███▄▄     ▄▄████▀ ████▄
+     ▀███████████▀▀    ▀████████▄
+        ▀▀▀▀▀▀▀           ▀▀▀███▀
+EOF
+printf '%b\n' "$R"
+echo "Alpharch — the trading layer for Omarchy. Linux is for traders."
+echo
+
+command -v git >/dev/null 2>&1 || {
+  printf '%bgit is required. On Arch:  sudo pacman -S git%b\n' "$RED" "$R"; exit 1; }
+
+if [[ -d "$SRC/.git" ]]; then
+  printf '%b▸ updating existing checkout%b\n' "$AMBER" "$R"
+  git -C "$SRC" pull --ff-only || { rm -rf "$SRC"; git clone --depth 1 "$REPO" "$SRC"; }
+else
+  printf '%b▸ cloning %s%b\n' "$AMBER" "$REPO" "$R"
+  rm -rf "$SRC"
+  git clone --depth 1 "$REPO" "$SRC"
+fi
+
+# the one dependency for live flow (skippable — installer works without it)
+if command -v pacman >/dev/null 2>&1 && ! python3 -c 'import websockets' 2>/dev/null; then
+  printf '%b▸ installing python-websockets (sudo)%b\n' "$AMBER" "$R"
+  sudo pacman -S --needed --noconfirm python-websockets \
+    || printf '%bcould not install python-websockets — live flow needs it: sudo pacman -S python-websockets%b\n' "$DIM" "$R"
+fi
+
+bash "$SRC/install.sh" < /dev/null
+
+echo
+printf '%b✓ Alpharch is installed.%b  %bIf a command is "not found", open a new terminal.%b\n' "$UP" "$R" "$DIM" "$R"
+printf '%bstart:%b  alpharch doctor   ·   omarchy-theme-set pit   ·   SUPER+ALT+O\n' "$AMBER" "$R"

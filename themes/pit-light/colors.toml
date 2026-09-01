@@ -1,0 +1,37 @@
+mode = "light"
+
+# The Pit, white — the printed prospectus. Paper and ink, amber marker.
+# Same rules as the dark Pit: green and red are direction, and only direction.
+
+accent = "#9a6b14"
+selection = "#ead9b0"
+muted = "#8f8771"
+
+background = "#f5f2e9"
+dark_background = "#efeadd"
+darker_background = "#e7e0cf"
+lighter_background = "#faf8f2"
+
+foreground = "#16130c"
+dark_foreground = "#5c553f"
+light_foreground = "#16130c"
+bright_foreground = "#000000"
+
+active_border_color = "#9a6b14"
+active_tab_background = "#e0c78a"
+
+red = "#b03038"
+yellow = "#9a6b14"
+orange = "#a8641e"
+green = "#1f7a4d"
+cyan = "#2a6f8a"
+blue = "#2f5d8a"
+magenta = "#6d4f8a"
+brown = "#7a5a2e"
+
+bright_red = "#d4555c"
+bright_yellow = "#c08a2a"
+bright_green = "#3a9a6a"
+bright_cyan = "#4a93ad"
+bright_blue = "#537fad"
+bright_magenta = "#8f74ad"

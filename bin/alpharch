@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# alpharch — the front door. Logo, status, doctor, and the command map.
+#
+#   alpharch              show the mark and the command map
+#   alpharch doctor       check every dependency and feed
+#   alpharch version
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+VERSION="1.2.0"
+
+logo() {
+  local f
+  f="$(dirname "$(readlink -f "$0")")/../branding/about.txt"
+  [[ -f "$f" ]] || f="$HOME/.config/omarchy/branding/about.txt"
+  if [[ -f "$f" ]]; then
+    printf '%b' "${PIT_AMBER}"; cat "$f"; printf '%b\n' "${PIT_RESET}"
+  else
+    amber "alpharch"
+  fi
+}
+
+cmd_map() {
+  head_ "THE DESK  ·  SUPER + ALT is the trading layer"
+  echo
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+A" "${PIT_RESET}" "The Line — type where you want to go: btc heat · opt map · jrnl"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+T" "${PIT_RESET}" "trade-desk — six rooms across your monitors, one keystroke"
+  echo
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+O" "${PIT_RESET}" "order flow — footprint · live keys: f/d/h/t/p/l switch views"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+E" "${PIT_RESET}" "depth ladder — walls, book pressure, session profile"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+H" "${PIT_RESET}" "liquidity heatmap — the book through time"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+G" "${PIT_RESET}" "flow canvas — the two worlds: candles into the liquidity fog"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+P" "${PIT_RESET}" "options flow — deribit tape · OI map · max pain (free, live)"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+M" "${PIT_RESET}" "markets — fuzzy-pick spot, perp, or options"
+  echo
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+W" "${PIT_RESET}" "session clock — Globex/NY/London opens, funding, countdowns"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+B" "${PIT_RESET}" "The Daily — watchlist · sessions · yesterday's debrief"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+J" "${PIT_RESET}" "journal — today's entry, plain Markdown, yours"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+C" "${PIT_RESET}" "journal capture — screenshot straight into today"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+D" "${PIT_RESET}" "focus — mute the world, read the tape"
+  printf '  %b%-15s%b %s\n' "${PIT_AMBER}" "SUPER+ALT+L" "${PIT_RESET}" "the shade — flip The Pit ↔ the white prospectus"
+  echo
+  dim "  every command also runs by name · replay any session: alphad --record / --replay"
+  dim "  themes follow Omarchy: omarchy-theme-set <anything> reskins it all"
+  dim "  config: ~/.config/alpharch/   journal: ~/Documents/trading-journal/"
+  echo
+  printf '  %btools, never signals · est. 2026 · alpharch.org%b\n' "${PIT_FAINT}" "${PIT_RESET}"
+}
+
+doctor() {
+  head_ "ALPHARCH DOCTOR"
+  echo
+  local pass=0 warn=0
+
+  chk() { # name, condition(0/1), fix
+    if [[ "$2" == 0 ]]; then ok "$1"; ((pass++))
+    else err "$1"; dim "    fix: $3"; ((warn++)); fi
+  }
+
+  have python3; chk "python3" $? "sudo pacman -S python"
+  python3 -c 'import websockets' 2>/dev/null; chk "python-websockets (live flow)" $? "sudo pacman -S python-websockets"
+  have curl; chk "curl (brief, spot prices)" $? "sudo pacman -S curl"
+  have hyprctl; chk "hyprctl (desk workspaces)" $? "run inside Omarchy/Hyprland"
+  { have fuzzel || have fzf; }; chk "fuzzel or fzf (market picker)" $? "sudo pacman -S fuzzel"
+  have grim; chk "grim (journal capture)" $? "sudo pacman -S grim"
+  { have makoctl || have dunstctl; }; chk "notification daemon (focus mode)" $? "Omarchy ships mako"
+  have omarchy-theme-set; chk "omarchy (theme integration)" $? "theme applies manually without it"
+
+  echo
+  if curl -sf --max-time 5 "https://api.coinbase.com/v2/prices/BTC-USD/spot" >/dev/null 2>&1; then
+    ok "Coinbase public API — spot flow live"
+  else
+    err "Coinbase API unreachable"
+  fi
+  if curl -sf --max-time 5 "https://fapi.binance.com/fapi/v1/time" >/dev/null 2>&1; then
+    ok "Binance futures API — perp flow, liqs, funding, OI live"
+  else
+    err "Binance futures API unreachable (geo-blocked in the US — spot+coinbase still work)"
+  fi
+  if curl -sf --max-time 5 "https://www.deribit.com/api/v2/public/get_time" >/dev/null 2>&1; then
+    ok "Deribit public API — options flow live"
+  else
+    err "Deribit API unreachable"
+  fi
+  echo
+  amber "futures depth (CME: ES/NQ/CL…) needs a paid feed — see README §Feeds. Nothing here fakes it."
+  echo
+  dim "$pass checks passed, $warn need attention"
+}
+
+case "${1:-}" in
+  doctor)   doctor ;;
+  version)  say "alpharch $VERSION" ;;
+  ""|help)  logo; echo; cmd_map ;;
+  *) err "usage: alpharch [doctor|version|help]"; exit 1 ;;
+esac

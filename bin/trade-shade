@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# trade-shade — flip the whole OS between the two Pit moods.
+#
+#   dark   The Pit        — near-black, amber line, Bloomberg blood
+#   light  The Pit, white — paper and ink, the printed prospectus
+#
+#   trade-shade            toggle
+#   trade-shade light|dark force
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+if ! have omarchy-theme-set; then
+  err "trade-shade drives Omarchy's theme system (omarchy-theme-set not found)"
+  exit 1
+fi
+
+cur=""
+have omarchy-theme-current && cur="$(omarchy-theme-current 2>/dev/null)"
+
+case "${1:-toggle}" in
+  light) target="pit-light" ;;
+  dark)  target="pit" ;;
+  toggle|"")
+    if [[ "$cur" == "pit" ]]; then target="pit-light"
+    else target="pit"; fi ;;
+  *) err "usage: trade-shade [light|dark|toggle]"; exit 1 ;;
+esac
+
+[[ "$cur" == "$target" ]] && { dim "already wearing $target"; exit 0; }
+omarchy-theme-set "$target" && {
+  [[ "$target" == "pit-light" ]] \
+    && notify "The Pit, white" "Prospectus mode. Paper and ink." \
+    || notify "The Pit" "Lights down. Read the tape."
+}

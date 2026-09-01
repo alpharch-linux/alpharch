@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# trade-symbol — the market switcher. Fuzzy-pick a contract or coin, and it
+# opens flow on it (and sets it as the default). Uses fuzzel if present
+# (Omarchy ships it), falls back to fzf, then to a numbered prompt.
+#
+#   trade-symbol            pick from the catalog
+#   trade-symbol BTC-USD    jump straight to a symbol
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+# The catalog. Futures front months are illustrative labels; crypto is live.
+# Format: "TICKER  Description  [exchange · class]"
+catalog() {
+cat <<'EOF'
+BTC-USD   Bitcoin                     crypto · Coinbase
+ETH-USD   Ethereum                    crypto · Coinbase
+SOL-USD   Solana                      crypto · Coinbase
+XRP-USD   XRP                         crypto · Coinbase
+DOGE-USD  Dogecoin                    crypto · Coinbase
+BTCUSDT   Bitcoin (Tether)            crypto · Binance
+ETHUSDT   Ethereum (Tether)           crypto · Binance
+SOLUSDT   Solana (Tether)             crypto · Binance
+BTC-PERP  Bitcoin perp · liqs+funding crypto · Binance futures
+ETH-PERP  Ethereum perp               crypto · Binance futures
+BTC-OPT   Bitcoin options · deribit   options · free live
+ETH-OPT   Ethereum options · deribit  options · free live
+ES        E-mini S&P 500 · front      CME · equity index  [needs futures feed]
+NQ        E-mini Nasdaq-100 · front   CME · equity index  [needs futures feed]
+RTY       E-mini Russell 2000         CME · equity index  [needs futures feed]
+CL        WTI Crude Oil               NYMEX · energy      [needs futures feed]
+GC        Gold                        COMEX · metals      [needs futures feed]
+ZN        10-Year T-Note              CBOT · rates        [needs futures feed]
+EOF
+}
+
+pick() {
+  if have fuzzel; then
+    catalog | fuzzel --dmenu -p "market ❯ " -l 14 2>/dev/null
+  elif have fzf; then
+    catalog | fzf --prompt="market ❯ " --height=40% --reverse
+  else
+    head_ "MARKETS"
+    catalog | nl -w2 -s'  '
+    printf '%bpick #: %b' "${PIT_AMBER}" "${PIT_RESET}"; read -r n
+    catalog | sed -n "${n}p"
+  fi
+}
+
+if [[ -n "${1:-}" ]]; then
+  SYM="$1"
+else
+  LINE="$(pick)" || exit 0
+  [[ -z "$LINE" ]] && exit 0
+  SYM="$(awk '{print $1}' <<<"$LINE")"
+fi
+
+# crypto symbols are live; futures tickers warn honestly
+case "$SYM" in
+  *-OPT)
+    exec alphaopt --currency "${SYM%-OPT}"
+    ;;
+  *-PERP)
+    exec alphad --exchange binance --market perp --symbol "${SYM%-PERP}USDT" --view liqs
+    ;;
+  *-USD|*USDT)
+    # persist as default and open flow
+    if grep -q '^default_symbol' "$ALPHARCH_CONFIG" 2>/dev/null; then
+      sed -i "s|^default_symbol.*|default_symbol = \"$SYM\"|" "$ALPHARCH_CONFIG"
+    else
+      printf 'default_symbol = "%s"\n' "$SYM" >> "$ALPHARCH_CONFIG"
+    fi
+    ok "Symbol → $SYM"
+    exec trade-flow "$SYM"
+    ;;
+  *)
+    err "$SYM is a futures contract — needs a paid depth feed (Rithmic/Denali)."
+    dim "Crypto symbols (BTC-USD, ETHUSDT…) run live and free right now."
+    exit 2
+    ;;
+esac

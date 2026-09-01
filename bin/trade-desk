@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# trade-desk — the whole desk, one keystroke. Detects your monitors and
+# spreads the rooms across them the way a desk actually works.
+#
+#   trade-desk open      raise every room (the flagship move)
+#   trade-desk close     tear down, open the journal — the debrief ritual
+#   trade-desk status    what's mapped where
+#
+# Rooms live in ~/.config/alpharch/desk.toml (seeded on first run, then
+# yours). Monitor spread: round-robin by default, or pin rooms with a
+# `monitor = N` line per room (0 = first monitor as Hyprland lists them).
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+DESK="$ALPHARCH_HOME/desk.toml"
+ROOMS="1 2 3 4 5 6"
+
+term_run() { # print the command that launches $* in the right terminal
+  if have omarchy-launch-terminal; then printf 'omarchy-launch-terminal %s' "$*"
+  elif have alacritty; then printf 'alacritty -e %s' "$*"
+  elif have foot; then printf 'foot %s' "$*"
+  elif have ghostty; then printf 'ghostty -e %s' "$*"
+  else printf '%s' "$*"; fi
+}
+
+seed_desk() {
+  [[ -f "$DESK" ]] && return
+  cat > "$DESK" <<EOF
+# alpharch desk — six rooms, one keypress. Edit freely: it's yours.
+# Each room: name + command (+ optional 'monitor = N' to pin it).
+# Views switch live inside alphad too: f/d/h/t/p/l.
+
+[1]
+name = "FLOW"
+run  = "$(term_run alphad --view flow)"
+
+[2]
+name = "DOM"
+run  = "$(term_run alphad --view dom)"
+
+[3]
+name = "HEAT"
+run  = "$(term_run alphad --view heat)"
+
+[4]
+name = "OPTIONS"
+run  = "$(term_run alphaopt)"
+
+[5]
+name = "CLOCK"
+run  = "$(term_run trade-clock --watch)"
+
+[6]
+name = "QUANT"
+run  = "$(term_run bash)"
+EOF
+  ok "Seeded desk layout → $DESK"
+}
+
+cfg_desk() {
+  local section="$1" key="$2"
+  awk -v s="[$section]" -v k="$key" '
+    $0==s {inb=1; next}
+    /^\[/ {inb=0}
+    inb && $0 ~ "^[[:space:]]*"k"[[:space:]]*=" {
+      sub(/^[^=]*=[[:space:]]*/,""); gsub(/^"|"[[:space:]]*$/,""); print; exit
+    }' "$DESK" 2>/dev/null
+}
+
+monitors() { # newline list of monitor names, in Hyprland order
+  in_hypr && hyprctl -j monitors 2>/dev/null \
+    | grep -oE '"name": *"[^"]*"' | cut -d'"' -f4
+}
+
+open_desk() {
+  seed_desk
+  head_ "ASSEMBLING THE DESK"
+  local mons=() n_mon=1
+  if in_hypr; then
+    mapfile -t mons < <(monitors)
+    n_mon=${#mons[@]}; ((n_mon)) || n_mon=1
+    dim "  $n_mon monitor(s): ${mons[*]:-—}"
+  fi
+  local i=0 ws
+  for ws in $ROOMS; do
+    local run name pin mon_idx
+    run="$(cfg_desk "$ws" run)"; name="$(cfg_desk "$ws" name)"
+    [[ -z "$run" ]] && continue
+    pin="$(cfg_desk "$ws" monitor)"
+    mon_idx="${pin:-$(( i % n_mon ))}"
+    printf '  %bws %s · %-8s%b' "${PIT_AMBER}" "$ws" "${name:-—}" "${PIT_RESET}"
+    if in_hypr; then
+      if (( n_mon > 1 )) && [[ -n "${mons[$mon_idx]:-}" ]]; then
+        hyprctl dispatch moveworkspacetomonitor "$ws" "${mons[$mon_idx]}" >/dev/null 2>&1
+        printf '%b → %s%b' "${PIT_FAINT}" "${mons[$mon_idx]}" "${PIT_RESET}"
+      fi
+      hyprctl dispatch exec "[workspace $ws silent] $run" >/dev/null 2>&1
+      printf '\n'; sleep 0.2
+    else
+      printf '\n    %b(dry run) %s%b\n' "${PIT_FAINT}" "$run" "${PIT_RESET}"
+    fi
+    ((i++))
+  done
+  if in_hypr; then
+    hyprctl dispatch workspace 1 >/dev/null 2>&1
+    notify "Desk assembled" "$(( i )) rooms across $n_mon monitor(s)"
+  fi
+  ok "Desk is up. Trade the open, not the setup."
+}
+
+close_desk() {
+  head_ "TEARING DOWN"
+  dim "The bell has rung. Opening the journal."
+  exec trade-journal today
+}
+
+status_desk() {
+  seed_desk
+  head_ "DESK LAYOUT"
+  for ws in $ROOMS; do
+    local name run pin
+    name="$(cfg_desk "$ws" name)"; run="$(cfg_desk "$ws" run)"; pin="$(cfg_desk "$ws" monitor)"
+    [[ -z "$run" ]] && continue
+    printf '  %b%s%b  %b%-8s%b %b%s%s%b\n' \
+      "${PIT_AMBER}" "$ws" "${PIT_RESET}" \
+      "${PIT_HEAD}" "${name:-—}" "${PIT_RESET}" \
+      "${PIT_FAINT}" "$run" "${pin:+  [monitor $pin]}" "${PIT_RESET}"
+  done
+  if in_hypr; then
+    dim "monitors: $(monitors | tr '\n' ' ')"
+  else
+    dim "Hyprland not detected — commands run in dry-run mode."
+  fi
+}
+
+case "${1:-open}" in
+  open|up|start)    open_desk ;;
+  close|down|stop)  close_desk ;;
+  status|ls)        status_desk ;;
+  *) err "usage: trade-desk [open|close|status]"; exit 1 ;;
+esac

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# alpharch-waybar — a waybar custom-module feed: spot price + focus state.
+# Emits one JSON line (waybar "custom" module, interval mode).
+#
+#   alpharch-waybar          the module output (call from waybar)
+#   alpharch-waybar setup    print the config to paste into waybar
+#
+# Honest by design: if the API is unreachable it says so instead of
+# showing a stale number.
+
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+
+if [[ "${1:-}" == "setup" ]]; then
+  cat <<'EOF'
+Add to ~/.config/waybar/config.jsonc (in "modules-right"):
+
+    "custom/alpharch",
+
+And this module block:
+
+    "custom/alpharch": {
+      "exec": "alpharch-waybar",
+      "return-type": "json",
+      "interval": 30,
+      "on-click": "trade-line"
+    },
+
+Optional style (~/.config/waybar/style.css):
+
+    #custom-alpharch { color: #e8a33d; }
+    #custom-alpharch.down { color: #dc5057; }
+    #custom-alpharch.focus { font-weight: bold; }
+
+Then: killall -SIGUSR2 waybar   (or restart waybar)
+EOF
+  exit 0
+fi
+
+SYM="$(cfg waybar_symbol BTC-USD)"
+STATE_DIR="${ALPHARCH_STATE:-$HOME/.local/state/alpharch}"
+CACHE="$STATE_DIR/waybar.last"   # price 30s ago, for direction
+
+focus=""
+[[ -f "$STATE_DIR/focus.on" ]] && focus=" ⊘"
+
+px="$(curl -sf --max-time 5 "https://api.coinbase.com/v2/prices/$SYM/spot" 2>/dev/null \
+      | grep -oE '"amount":"[0-9.]+"' | cut -d'"' -f4)"
+
+if [[ -z "$px" ]]; then
+  printf '{"text":"α —%s","tooltip":"alpharch: feed unreachable","class":"stale"}\n' "$focus"
+  exit 0
+fi
+
+prev="$(cat "$CACHE" 2>/dev/null || echo "$px")"
+printf '%s' "$px" > "$CACHE"
+
+cls="up"; arrow="▲"
+awk "BEGIN{exit !($px < $prev)}" && { cls="down"; arrow="▼"; }
+[[ -n "$focus" ]] && cls="$cls focus"
+
+pretty="$(printf '%.0f' "$px" 2>/dev/null | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')"
+printf '{"text":"α %s %s%s","tooltip":"%s spot (coinbase) · click for The Line","class":"%s"}\n' \
+  "$pretty" "$arrow" "$focus" "$SYM" "$cls"
