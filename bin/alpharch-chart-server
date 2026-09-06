@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Local read-only chart workspace. Public feeds and optional read-only local broker connections."""
+import argparse
+from collections import ChainMap
+import asyncio
+from http import HTTPStatus
+import json
+from pathlib import Path
+import sys
+import time
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from alpharch_public import ASSETS, PROVIDERS
+from alpharch_desktop import launch as launch_desktop
+from alpharch_connections import Connections
+from alpharch_sessions import Sessions
+from alpharch_streams import Streams
+from alpharch_insights import observations, Options
+from alpharch_broker_session import BrokerSession
+from alpharch_aggregation import event_bars
+
+async def main(port):
+    from websockets.legacy.server import serve
+    from websockets.exceptions import ConnectionClosed
+    page = Path(__file__).resolve().parents[1] / 'share/desk.html'
+    streams=Streams()
+    options=Options()
+    markets, snapshots = streams.markets, {}
+    def request(path, headers):
+        host = headers.get('Host', '')
+        if host not in (f'127.0.0.1:{port}', f'localhost:{port}', f'[::1]:{port}'):
+            return HTTPStatus.FORBIDDEN, [], b'Local access only'
+        if path == '/ws':
+            return None
+        if path in ('/', '/index.html'):
+            data = page.read_bytes()
+            return HTTPStatus.OK, [('Content-Type','text/html; charset=utf-8'),('Content-Length',str(len(data))),('Cache-Control','no-store')], data
+        if path in ('/connections.js', '/sessions.js', '/insights.js', '/broker.js', '/desk-polish.css', '/starters.js', '/starters.css'):
+            asset = page.parent / path[1:]
+            if not asset.is_file():
+                return HTTPStatus.NOT_FOUND, [], b'Not found'
+            mime = 'application/javascript' if path.endswith('.js') else 'text/css'
+            return HTTPStatus.OK, [('Content-Type',mime),('Cache-Control','no-store')], asset.read_bytes()
+        if path == '/health':
+            data = json.dumps({'service':'alpharch-chart-server','version':'1.8.0-alpha.1','readOnly':True,'sources':list(markets)}).encode()
+            return HTTPStatus.OK, [('Content-Type','application/json')], data
+        return HTTPStatus.NOT_FOUND, [], b'Not found'
+    async def connection(ws, path):
+        if path != '/ws':
+            await ws.close(1008, 'Unsupported path')
+            return
+        keys = set()
+        accounts = Connections()
+        broker = BrokerSession()
+        session = Sessions(ChainMap(broker.markets,markets))
+        aggregations={}
+        aggregate_cache={}
+        async def emit_connections(result):
+            await ws.send(json.dumps({"connections": result}, allow_nan=False))
+        async def receive():
+            nonlocal keys
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if isinstance(msg.get('aggregations'),list):
+                        values=msg['aggregations']
+                        if len(values)>8:raise ValueError('Too many aggregation requests')
+                        candidate={}
+                        for value in values:
+                            key=value['key'];kind=value['kind'];size=value['size']
+                            if kind not in ('ticks','volume','range') or not isinstance(size,(int,float)) or not 0<size<=1000000:raise ValueError('Invalid event bar size')
+                            if kind!='volume' and size!=int(size):raise ValueError('Use whole ticks or trades')
+                            candidate[key+':'+kind+':'+str(size)]={'key':key,'kind':kind,'size':size}
+                        aggregations.clear();aggregations.update(candidate)
+                        continue
+                    if isinstance(msg.get('ibkr'),dict):
+                        try:
+                            if msg['ibkr'].get('action') in ('connect','disconnect') and any(k.startswith('ibkr:') for k in session.recorders):
+                                session.stop([k for k in session.recorders if k.startswith('ibkr:')])
+                                await ws.send(json.dumps({'session':session.status()}))
+                            result = broker.command(msg['ibkr'])
+                            await ws.send(json.dumps({'ibkr':result}))
+                        except (ValueError,TypeError):
+                            await ws.send(json.dumps({'ibkr':{'error':'IBKR request unavailable. Check local API setup, exact contract selection and supported parameters.','status':broker.bridge.status()}}))
+                        continue
+                    if isinstance(msg.get('insights'),dict):
+                        value=msg['insights'];key=value.get('key')
+                        source=session.replay if session.headers else {**markets,**broker.markets}
+                        if key not in source:
+                            await ws.send(json.dumps({'insightError':'Choose a connected chart.'}))
+                            continue
+                        facts=observations(source[key])
+                        if session.headers:
+                            facts['asOf']=session.clock;facts['replay']=True
+                            if source[key].book_time is None or session.clock-source[key].book_time>15:facts['levels']=[]
+                        result={'key':key,'facts':facts}
+                        if value.get('options') and not session.headers and source[key].asset in ('BTC','ETH'):
+                            result['options']=await options.get(source[key].asset)
+                        await ws.send(json.dumps({'insights':result},allow_nan=False))
+                        continue
+                    if isinstance(msg.get('session'),dict):
+                        try:
+                            result = session.command(msg['session'])
+                            if session.headers:broker.retain(set())
+                            await streams.set(ws, (keys if not session.headers else set()) | {key for key in session.recorders if not key.startswith('ibkr:')})
+                            await ws.send(json.dumps({'session':result}))
+                        except (ValueError,KeyError,TypeError,OSError):
+                            await ws.send(json.dumps({'sessionError':'Could not open this session. Choose supported local recordings with valid symbol/tick metadata, or wait for the selected live feeds.'}))
+                        continue
+                    if isinstance(msg.get('connections'),dict):
+                        try:
+                            await accounts.command(msg['connections'], emit_connections)
+                        except ValueError as error:
+                            await ws.send(json.dumps({'error':str(error)}))
+                        continue
+                    if isinstance(msg.get('desktop'),dict):
+                        try:
+                            result = await asyncio.to_thread(launch_desktop,msg['desktop'])
+                            await ws.send(json.dumps({'desktop':result}))
+                        except (ValueError,OSError) as error:
+                            await ws.send(json.dumps({'error':str(error)}))
+                        continue
+                    values = msg['subscribe']
+                    if not isinstance(values,list) or len(values)>9:
+                        raise ValueError()
+                    candidate = set()
+                    for key in values:
+                        provider,asset = key.split(':')
+                        if provider=='ibkr':
+                            if key not in broker.markets and asset.isdigit() and int(asset) in broker.contracts and broker.bridge.status()['ready']:
+                                broker.command({'action':'open','conId':int(asset)})
+                            if key in broker.markets:candidate.add(key)
+                            continue
+                        if provider not in PROVIDERS or asset not in ASSETS:
+                            raise ValueError()
+                        candidate.add(key)
+                    broker.retain(candidate | set(session.recorders))
+                    keys = {key for key in candidate if not key.startswith('ibkr:')}
+                    await streams.set(ws, (keys if not session.headers else set()) | {key for key in session.recorders if not key.startswith('ibkr:')})
+                    for key in snapshots.keys()-markets.keys():
+                        snapshots.pop(key,None)
+                except (ValueError,KeyError,TypeError,AttributeError):
+                    await ws.send(json.dumps({'error':'Choose a supported public market'}))
+        receiver = asyncio.create_task(receive())
+        try:
+            while not receiver.done():
+                if session.error and session.recorders:
+                    session.stop()
+                    await streams.set(ws,keys if not session.headers else set())
+                    await ws.send(json.dumps({'session':session.status()}))
+                broker_update=broker.poll()
+                if broker_update['events']:
+                    await ws.send(json.dumps({'ibkr':broker_update}))
+                if not session.headers:
+                    for market in broker.markets.values():
+                        await ws.send(json.dumps({'market':market.snapshot()},allow_nan=False))
+                session.advance()
+                if session.headers:
+                    await ws.send(json.dumps({'session':session.status()}))
+                    for snapshot in session.snapshots():
+                        await ws.send(json.dumps({'market':snapshot},allow_nan=False))
+                for key in sorted(keys if not session.headers else []):
+                    cached = snapshots.get(key)
+                    if cached and cached[2] is not markets[key]:
+                        cached = None
+                    if cached is None or time.monotonic()-cached[0] >= 1:
+                        cached = (time.monotonic(),json.dumps({'market':markets[key].snapshot()}, allow_nan=False),markets[key])
+                        snapshots[key] = cached
+                    await ws.send(cached[1])
+                source=session.replay if session.headers else ChainMap(broker.markets,markets)
+                for ident,spec in aggregations.items():
+                    market=source.get(spec['key'])
+                    if not market or not market.price_tick():continue
+                    signature=(market,market.revision,str(market.price_tick()),spec['kind'],spec['size'])
+                    cached=aggregate_cache.get(ident)
+                    if not cached or cached[0]!=signature:
+                        rows=event_bars(market.trade_data()[2],spec['kind'],spec['size'],market.price_tick())
+                        cached=(signature,rows);aggregate_cache[ident]=cached
+                    await ws.send(json.dumps({'eventBars':{**spec,'bars':cached[1],'replay':bool(session.headers)}}))
+                for ident in aggregate_cache.keys()-aggregations.keys():aggregate_cache.pop(ident,None)
+                await asyncio.sleep(1)
+        except ConnectionClosed:
+            pass
+        finally:
+            receiver.cancel()
+            await asyncio.gather(receiver,return_exceptions=True)
+            broker.close()
+            session.stop()
+            await streams.remove(ws)
+            await accounts.close()
+    origins = [f'http://127.0.0.1:{port}',f'http://localhost:{port}',None]
+    try:
+        async with serve(connection,'127.0.0.1',port,process_request=request,origins=origins,max_size=65536,ping_interval=20):
+            print(f'Alpharch live desk: http://127.0.0.1:{port}/',flush=True)
+            await asyncio.Future()
+    finally:
+        await streams.close()
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port',type=int,default=17863)
+    args=parser.parse_args()
+    try:asyncio.run(main(args.port))
+    except KeyboardInterrupt:pass

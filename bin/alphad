@@ -37,6 +37,7 @@ Requires: python-websockets (sudo pacman -S python-websockets)
 import argparse
 import asyncio
 import json
+import math
 import os
 import errno
 import shutil
@@ -45,6 +46,11 @@ import termios
 import time
 import tty
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from alpharch_public import timestamp as exchange_timestamp
+from alpharch_indicators import calculate
+from alpharch_levels import concentrations, options_levels, LevelTracker
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
@@ -68,18 +74,14 @@ def _theme_colors():
     path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
     if os.environ.get("ALPHARCH_NO_THEME") or not os.path.exists(path):
         return {}
-    out = {}
     try:
-        for ln in open(path):
-            ln = ln.split("#", 1)[0] if not ln.strip().startswith("#") else ""
-            if "=" in ln:
-                k, v = ln.split("=", 1)
-                v = v.strip().strip('"')
-                if v.startswith("#") and len(v) == 7:
-                    out[k.strip()] = tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
-    except OSError:
+        import tomllib
+        with open(path, "rb") as f:
+            palette = tomllib.load(f)
+        return {k: tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
+                for k, v in palette.items() if isinstance(v, str) and v.startswith("#") and len(v) == 7}
+    except (OSError, ValueError):
         return {}
-    return out
 
 
 def _fg(rgb):
@@ -119,7 +121,7 @@ def fnum(x, dp=2):
 
 
 def fpx(p):
-    return f"{p:,.2f}" if p < 10000 else f"{p:,.0f}"
+    return f"{p:,.8f}".rstrip("0").rstrip(".")
 
 
 def clock(ts=None):
@@ -178,6 +180,14 @@ class Engine:
         self.tick = tick
         self.bucket_secs = bucket_secs
         self.bar_mode = "time"                       # time | range
+        self.bar_count = 100
+        self.history = deque(maxlen=100000)
+        self.rebuilding = False
+        self.replay_paused = False
+        self.replay_speed = 1.0
+        self.replay_seek = None
+        self.replay_step = False
+        self.replay_progress = 0.0
         self.bar_range = 0.0                         # $ range per bar when bar_mode=range
         self.large_mult = large_mult
         self.imb_ratio = imb_ratio
@@ -189,7 +199,7 @@ class Engine:
         self.n_trades = 0
         self.started = time.time()
 
-        self.buckets = deque(maxlen=48)
+        self.buckets = deque(maxlen=600)
         self.cur = None
 
         self.tape = deque(maxlen=400)
@@ -208,6 +218,10 @@ class Engine:
         # book
         self.bids = {}
         self.asks = {}
+        self.book_version = 0
+        self.book_received = None
+        self.last_received = None
+        self.replay_done = False
         self.book_ok = False
         self.book_note = ""
         self.heat = deque(maxlen=600)               # (ts, mid, {gridpx: qty}, last, aggr, big)
@@ -232,6 +246,9 @@ class Engine:
         return round(p / self.tick) * self.tick
 
     def on_trade(self, t: Trade):
+        self.last_received = time.time()
+        if not self.rebuilding:
+            self.history.append(t)
         self.event_ts = t.ts
         self.n_trades += 1
         self.last = t.price
@@ -257,6 +274,10 @@ class Engine:
         roll = False
         if self.cur is None:
             roll = True
+        elif self.bar_mode == "tick":
+            roll = self.cur.trades >= self.bar_count
+        elif self.bar_mode == "volume":
+            roll = self.cur.volume >= self.bar_count
         elif self.bar_mode == "range" and self.bar_range > 0:
             hi = max(self.cur.high, t.price)
             lo = min(self.cur.low, t.price)
@@ -265,7 +286,7 @@ class Engine:
             roll = t.ts - self.cur.start >= self.bucket_secs
         if roll:
             self._close_bucket()
-            start = t.ts if self.bar_mode == "range" else t.ts - (t.ts % self.bucket_secs)
+            start = t.ts if self.bar_mode != "time" else t.ts - (t.ts % self.bucket_secs)
             self.cur = Bucket(start=start, open_px=t.price)
         b = self.cur
         b.close = t.price
@@ -304,6 +325,9 @@ class Engine:
                 self.notes.append((b.start, f"divergence — new high {fpx(b.high)} on negative delta"))
 
     def on_book(self, bids, asks, replace=True):
+        self.book_version += 1
+        self.book_received = time.time()
+        self.last_received = time.time()
         if replace:
             self.bids = dict(bids)
             self.asks = dict(asks)
@@ -347,11 +371,11 @@ class Engine:
             self.liq_short += lq.qty
 
     def rate(self, secs=10):
-        cut = time.time() - secs
+        cut = (self.event_ts or time.time()) - secs
         return sum(1 for ts in self.rate_win if ts >= cut) / secs
 
     def delta_last(self, secs):
-        cut = time.time() - secs
+        cut = (self.event_ts or time.time()) - secs
         d = 0.0
         for t in self.tape:
             if t.ts >= cut:
@@ -673,14 +697,16 @@ def render_help(eng, w, h):
 
 # ── recorder / replay ──────────────────────────────────────────────────────
 class Recorder:
-    def __init__(self, path, feed="", symbol=""):
+    def __init__(self, path, feed="", symbol="", tick=None):
         self.f = open(path, "a", buffering=1)
         self._book_last = 0.0
         # Header first: replay needs to know which feed cut the tape, so a
         # hyperliquid tape can repeat "no public liq stream" instead of
         # looking like a market where nothing got liquidated.
         self.f.write(json.dumps({"k": "h", "ts": time.time(),
-                                 "feed": feed, "symbol": symbol}) + "\n")
+                                 "feed": feed, "symbol": symbol, "tick": tick,
+                                 "depth_levels": 15, "depth_sampling_seconds": 1,
+                                 "depth_timestamp": "local receive time"}) + "\n")
 
     def trade(self, t: Trade):
         self.f.write(json.dumps({"k": "t", "ts": t.ts, "p": t.price, "s": t.size, "a": t.aggressor}) + "\n")
@@ -715,22 +741,20 @@ def read_tape_header(path):
 
 async def replay_feed(eng, rec_path, speed, on_event):
     with open(rec_path) as f:
-        lines = [json.loads(x) for x in f if x.strip()]
-    if not lines:
-        print("empty recording")
-        return
-    t0 = next((x["ts"] for x in lines if x.get("k") != "h"), lines[0]["ts"])
-    wall0 = time.time()
-    for ev in lines:
-        wait = (ev["ts"] - t0) / speed - (time.time() - wall0)
-        if wait > 0:
-            await asyncio.sleep(wait)
+        events = [json.loads(x) for x in f if x.strip()]
+    header = next((ev for ev in events if ev.get("k") == "h"), {})
+    if str(header.get("feed", "")).startswith("hyperliquid"):
+        eng.liq_note = HL_NO_LIQ_NOTE
+        eng.funding_hours = HL_FUNDING_HOURS
+    events = [ev for ev in events if ev.get("k") != "h"]
+    if not events:
+        raise ValueError("empty recording")
+    eng.replay_speed = speed
+    index = 0
+    remaining = 0.0
+
+    def apply(ev):
         eng.event_ts = ev["ts"]
-        if ev["k"] == "h":
-            if str(ev.get("feed", "")).startswith("hyperliquid"):
-                eng.liq_note = HL_NO_LIQ_NOTE
-                eng.funding_hours = HL_FUNDING_HOURS
-            continue
         if ev["k"] == "t":
             eng.on_trade(Trade(ev["ts"], ev["p"], ev["s"], ev["a"]))
         elif ev["k"] == "b":
@@ -739,15 +763,45 @@ async def replay_feed(eng, rec_path, speed, on_event):
             eng.on_liq(Liq(ev["ts"], ev["side"], ev["p"], ev["q"]))
         elif ev["k"] == "f":
             eng.funding = (ev["r"], ev["n"])
-            if ev.get("h"):
-                eng.funding_hours = ev["h"]
+            eng.funding_hours = ev.get("h") or eng.funding_hours
             if ev.get("oi") is not None:
                 eng.oi = (ev["oi"], ev["ts"])
                 if eng.oi_open is None:
                     eng.oi_open = ev["oi"]
+
+    while True:
+        if eng.replay_seek is not None:
+            target = round(eng.replay_seek * len(events))
+            settings = {k: getattr(eng, k) for k in
+                        ("symbol", "bar_mode", "bar_range", "bar_count", "replay_speed", "replay_paused", "liq_note", "funding_hours")}
+            eng.__init__(eng.tick, eng.bucket_secs, eng.large_mult, eng.imb_ratio)
+            for k, v in settings.items():
+                setattr(eng, k, v)
+            for n in range(target):
+                apply(events[n])
+                if n % 1000 == 0:
+                    await asyncio.sleep(0)
+            index, remaining = target, 0.0
+            eng.replay_progress = index / len(events)
+            on_event()
+        if index >= len(events):
+            eng.replay_done = True
+            await asyncio.sleep(0.05)
+            continue
+        if eng.replay_paused and not eng.replay_step:
+            await asyncio.sleep(0.05)
+            continue
+        if remaining > 0 and not eng.replay_step:
+            before = time.monotonic()
+            await asyncio.sleep(min(0.05, remaining / eng.replay_speed))
+            remaining -= (time.monotonic() - before) * eng.replay_speed
+            continue
+        apply(events[index])
         on_event()
-    eng.notes.append((time.time(), "replay finished"))
-    await asyncio.sleep(3600)
+        index += 1
+        eng.replay_progress = index / len(events)
+        eng.replay_step = False
+        remaining = max(0, events[index]["ts"] - events[index - 1]["ts"]) if index < len(events) else 0
 
 
 # ── deterministic tape analysis ────────────────────────────────────────────
@@ -964,23 +1018,38 @@ def analyze_tape(path, tick, bucket_secs, large_mult, imb_ratio):
 async def coinbase_feed(eng, symbol, rec, on_event):
     import websockets
     url = "wss://ws-feed.exchange.coinbase.com"
+    seen_ids = set()
+    id_order = deque()
     sub = {"type": "subscribe", "product_ids": [symbol], "channels": ["matches", "level2_batch"]}
     async for ws in websockets.connect(url, ping_interval=20, max_size=2**23):
         try:
+            eng.bids, eng.asks, eng.book_ok, eng.book_received = {}, {}, False, None
             await ws.send(json.dumps(sub))
             async for raw in ws:
                 m = json.loads(raw)
                 typ = m.get("type")
                 if typ in ("match", "last_match"):
+                    if m.get("side") not in ("buy", "sell"):
+                        continue
+                    ident = m.get("trade_id")
+                    if ident is not None:
+                        if ident in seen_ids:
+                            continue
+                        seen_ids.add(ident)
+                        id_order.append(ident)
+                        if len(id_order) > 60000:
+                            seen_ids.discard(id_order.popleft())
                     aggr = "sell" if m["side"] == "buy" else "buy"  # side = maker side
-                    t = Trade(time.time(), float(m["price"]), float(m["size"]), aggr)
+                    t = Trade(exchange_timestamp(m["time"]) if m.get("time") else time.time(), float(m["price"]), float(m["size"]), aggr)
                     eng.on_trade(t)
                     rec and rec.trade(t)
                     on_event()
                 elif typ == "snapshot":
-                    eng.on_book({float(p): float(q) for p, q in m.get("bids", [])[:200]},
-                                {float(p): float(q) for p, q in m.get("asks", [])[:200]})
+                    eng.event_ts = time.time()
+                    eng.on_book({float(p): float(q) for p, q in m.get("bids", [])},
+                                {float(p): float(q) for p, q in m.get("asks", [])})
                 elif typ == "l2update":
+                    eng.event_ts = exchange_timestamp(m["time"]) if m.get("time") else time.time()
                     bids, asks = [], []
                     for side, p, q in m.get("changes", []):
                         (bids if side == "buy" else asks).append((float(p), float(q)))
@@ -1178,21 +1247,64 @@ async def oi_poll(eng, symbol):
 def canvas_snapshot(eng, args, state=None):
     heat = [{"t": h[0], "mid": h[1], "cols": {str(k): round(v, 3) for k, v in h[2].items()},
              "px": h[3], "aggr": h[4], "big": h[5], "sz": round(h[6], 4)} for h in eng.heat]
+    technical = {}
+    bars = list(eng.buckets) + ([eng.cur] if eng.cur else [])
+    inputs = [{"open": b.open_px, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
+    for name, settings in (state or {}).get("technical", {}).items():
+        technical[name] = {"times": [b.start for b in bars], "settings": settings,
+                           "series": calculate(inputs, name, settings["period"], settings["source"])}
+    discovered = []
+    if state and state.get("discovery"):
+        now = time.time()
+        if eng.book_received and now - eng.book_received <= 15:
+            for side in ("bid", "ask"):
+                discovered += concentrations(getattr(eng, side + "s").items(), source=args.replay_feed if args.replay else args.exchange,
+                    timestamp=eng.book_received, instrument=args.symbol, metric="resting_" + side, threshold=state.get("level_threshold",3))
+        discovered += options_levels(state.get("options_chain", []), timestamp=state.get("options_ts",0),now=now,threshold=state.get("level_threshold",3))
+        state["level_tracker"].update(discovered, now)
     return json.dumps({
+        "workspace": (state or {}).get("workspace"),
+        "technical": technical,
+        "levels": list(state["level_tracker"].active.values()) if state and state.get("discovery") else [],
+        "level_history": list(state["level_tracker"].history)[-50:] if state and state.get("discovery") else [],
+        "options": {"enabled": state.get("options_enabled",False), "timestamp": state.get("options_ts"),
+                    "error": state.get("options_error", ""), "rows": state.get("options_chain", [])} if state else {},
         "symbol": args.symbol,
-        "feed": args.exchange + (" perp" if args.market == "perp" else ""),
+        "theme": {k: "#%02x%02x%02x" % v for k, v in _theme_colors().items()},
+        "feed": args.replay_feed if args.replay else args.exchange + (" perp" if args.market == "perp" else ""),
+        "mode": "replay" if args.replay else "live",
+        "status": ("finished" if eng.replay_done else "replay") if args.replay else
+                  ("waiting" if eng.last_received is None else
+                   "stale" if time.time() - eng.last_received > 15 else "receiving"),
+        "age": time.time() - eng.last_received if eng.last_received else None,
+        "market": args.market,
+        "depth_levels": getattr(args, "depth_levels", None),
+        "book": {"bids": sorted(eng.bids.items(), reverse=True)[:20],
+                 "asks": sorted(eng.asks.items())[:20], "note": eng.book_note},
+        "tape": [{"t": t.ts, "p": t.price, "s": t.size, "a": t.aggressor}
+                 for t in list(eng.tape)[-30:]],
         "last": eng.last, "open": eng.session_open, "high": eng.session_high,
         "low": eng.session_low if eng.session_low < 1e17 else None,
+        "min_tick": getattr(args,"min_tick",None),
         "tick": eng.tick, "cvd": round(eng.cvd, 3),
         "buckets": [{"t": b.start, "o": b.open_px, "h": b.high, "l": b.low, "c": b.close,
-                     "v": round(b.volume, 3), "d": round(b.delta, 3)}
+                     "v": round(b.volume, 3), "d": round(b.delta, 3),
+                     "footprint": [[p, b.bid_vol.get(p, 0), b.ask_vol.get(p, 0)]
+                                   for p in sorted(set(b.bid_vol) | set(b.ask_vol))]}
                     for b in list(eng.buckets) + ([eng.cur] if eng.cur else [])],
         "heat": heat,
         "bigs": [{"t": t.ts, "p": t.price, "s": round(t.size, 4), "a": t.aggressor}
                  for t in eng.big_prints],
         "cvds": [{"t": c[0], "v": round(c[1], 3)} for c in eng.cvd_series],
-        "vwap": [{"t": c[0], "v": round(c[1], 2)} for c in eng.vwap_series],
-        "bars": {"mode": eng.bar_mode, "range": eng.bar_range},
+        "vwap": [{"t": c[0], "v": c[1]} for c in eng.vwap_series],
+        "bars": {"mode": eng.bar_mode, "range": eng.bar_range, "count": eng.bar_count, "seconds": eng.bucket_secs},
+        "replay": {"paused": eng.replay_paused, "speed": eng.replay_speed,
+                   "progress": eng.replay_progress} if args.replay else None,
+        "profile": [[p, v[0], v[1]] for p, v in sorted(eng.profile.items())],
+        "paper": state["paper"].snapshot() if state and "paper" in state else None,
+        "assistant": {"source_time": eng.event_ts, "last": eng.last, "cvd": eng.cvd,
+                      "session_vwap": eng._pv / eng._v if eng._v else None,
+                      "note": "Observed session facts; no forecast or order authority"},
         "indicators": (state or {}).get("indicators", {"vwap": False, "cvd": True}),
         "funding": {"rate": eng.funding[0], "next": eng.funding[1],
                     "hours": eng.funding_hours} if eng.funding else None,
@@ -1252,13 +1364,51 @@ async def canvas_server(eng, args, state=None):
         clients.add(ws)
         try:
             await ws.send(canvas_snapshot(eng, args, state))
-            async for _ in ws:
-                pass
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if not isinstance(msg, dict):
+                        continue
+                    if args.replay and isinstance(msg.get("replay"), dict):
+                        ctrl = msg["replay"]
+                        if isinstance(ctrl.get("paused"), bool):
+                            eng.replay_paused = ctrl["paused"]
+                        for key, low, high in (("speed", 0.1, 32), ("seek", 0, 1)):
+                            v = ctrl.get(key)
+                            if isinstance(v, (int, float)) and math.isfinite(v) and low <= v <= high:
+                                setattr(eng, "replay_" + key, v)
+                                if key == "seek":
+                                    state["level_tracker"] = LevelTracker()
+                                    if "paper" in state:
+                                        state["paper"].enabled = False
+                        if ctrl.get("step") is True:
+                            eng.replay_paused = True
+                            eng.replay_step = True
+                    if isinstance(msg.get("paper"), dict) and "paper" in state:
+                        paper, command = state["paper"], msg["paper"]
+                        if command.get("enable") is True:
+                            paper.enabled = True
+                        elif command.get("enable") is False:
+                            paper.enabled = False
+                        elif command.get("cancel"):
+                            paper.cancel(command["cancel"])
+                        elif command.get("submit"):
+                            paper.submit(command["submit"], args.min_tick or eng.tick)
+                    apply_ctrl(eng, state, msg)
+                except (ValueError, TypeError) as exc:
+                    await ws.send(json.dumps({"error": str(exc)}))
+                    continue
         finally:
             clients.discard(ws)
 
     async def broadcaster():
         while True:
+            if "paper" in state:
+                state["paper"].match(eng.bids, eng.asks, eng.event_ts or time.time(),
+                                     (eng.book_version, eng.event_ts),
+                                     stale=eng.book_received is None or
+                                     (not args.replay and time.time()-eng.book_received > 15) or
+                                     (bool(args.replay) and (eng.replay_paused or eng.replay_done)))
             if clients:
                 msg = canvas_snapshot(eng, args, state)
                 await asyncio.gather(*(c.send(msg) for c in list(clients)),
@@ -1279,7 +1429,8 @@ async def canvas_server(eng, args, state=None):
 
     try:
         server = websockets.serve(handler, "127.0.0.1", args.port,
-                                  process_request=process_request, max_size=2**22)
+                                  process_request=process_request, max_size=16384,
+                                  origins=[None, f"http://127.0.0.1:{args.port}", f"http://localhost:{args.port}"])
         await server.__aenter__()
     except OSError as ex:
         if ex.errno != errno.EADDRINUSE:
@@ -1295,7 +1446,8 @@ async def canvas_server(eng, args, state=None):
         os._exit(0)
     try:
         print(f"{AMBER}alphad canvas{RESET} → {url}   (ctrl-c to stop)")
-        open_window()
+        if not args.no_open:
+            open_window()
         await broadcaster()
     finally:
         await server.__aexit__(None, None, None)
@@ -1311,6 +1463,30 @@ CTRL_DIR = os.path.expanduser(os.environ.get("ALPHARCH_STATE",
 def apply_ctrl(eng, state, msg):
     """Validate and apply one control message. Returns a reply dict."""
     applied = {}
+    if msg.get("restore") is True:
+        if "paper" in state:
+            state["paper"].enabled = False
+        eng.replay_paused = True
+    if isinstance(msg.get("workspace"), dict):
+        state["workspace"] = msg["workspace"]
+    old_bars = (eng.bar_mode, eng.bar_range, eng.bar_count, eng.bucket_secs)
+    if isinstance(msg.get("technical"), dict):
+        valid = {}
+        for name, settings in list(msg["technical"].items())[:8]:
+            if name not in ("sma","ema","bollinger","atr","rsi","macd","stochastic","volume") or not isinstance(settings,dict):
+                continue
+            period, source = settings.get("period",14), settings.get("source","close")
+            if type(period) is int and 2 <= period <= 200 and source in ("open","high","low","close","hlc3"):
+                valid[name] = {"period": period, "source": source}
+        state["technical"] = valid
+        applied["technical"] = valid
+    for feature in ("discovery", "options_enabled"):
+        if type(msg.get(feature)) is bool:
+            state[feature] = msg[feature]
+            if feature == "options_enabled" and not msg[feature]:
+                state["options_chain"] = []
+    if isinstance(msg.get("level_threshold"), (float,int)) and 2 <= msg["level_threshold"] <= 20:
+        state["level_threshold"] = msg["level_threshold"]
     if "view" in msg:
         v = str(msg["view"])
         if v in VIEWS:
@@ -1331,6 +1507,25 @@ def apply_ctrl(eng, state, msg):
                     eng.bar_mode = "range"; eng.bar_range = r
                     applied["bars"] = {"mode": "range", "range": r}
             except (TypeError, ValueError): pass
+    if isinstance(msg.get("bars"), dict):
+        b = msg["bars"]
+        mode = b.get("mode")
+        value = b.get("value")
+        if mode in ("time", "tick", "volume") and isinstance(value, int) and 1 <= value <= 86400:
+            eng.bar_mode = mode
+            if mode == "time":
+                eng.bucket_secs = value
+            else:
+                eng.bar_count = value
+            applied["bars"] = b
+    if old_bars != (eng.bar_mode, eng.bar_range, eng.bar_count, eng.bucket_secs):
+        # Rebuild chart bars only, preserving full-session CVD, VWAP and profile.
+        chart = Engine(eng.tick, eng.bucket_secs, eng.large_mult, eng.imb_ratio)
+        chart.bar_mode, chart.bar_range, chart.bar_count = eng.bar_mode, eng.bar_range, eng.bar_count
+        chart.rebuilding = True
+        for trade in eng.history:
+            chart.on_trade(trade)
+        eng.buckets, eng.cur = chart.buckets, chart.cur
     if "indicators" in msg and isinstance(msg["indicators"], dict):
         ind = state.setdefault("indicators", {"vwap": False, "cvd": True})
         for k in ("vwap", "cvd"):
@@ -1339,7 +1534,8 @@ def apply_ctrl(eng, state, msg):
     return {"ok": True, "applied": applied,
             "state": {"symbol": eng.symbol, "view": state.get("view"),
                       "tick": eng.tick, "bars": eng.bar_mode,
-                      "range": eng.bar_range,
+                      "range": eng.bar_range, "seconds": eng.bucket_secs, "count": eng.bar_count,
+                      "technical": state.get("technical",{}), "workspace": state.get("workspace",{}),
                       "indicators": state.get("indicators", {"vwap": False, "cvd": True})}}
 
 
@@ -1350,7 +1546,7 @@ async def ctrl_server(eng, args, state):
     with open(meta, "w") as f:
         json.dump({"pid": os.getpid(), "symbol": args.symbol,
                    "exchange": args.exchange, "canvas": bool(args.canvas),
-                   "port": args.port if args.canvas else None}, f)
+                   "port": args.port if args.canvas else None, "market": args.market, "replay": args.replay}, f)
 
     async def handle(reader, writer):
         try:
@@ -1424,12 +1620,43 @@ def setup_keys(state, loop):
     return old
 
 
+async def options_context(args, state):
+    """Optional independent Deribit OI context. Never attach live options to replay."""
+    coin = args.symbol.split("-")[0].removesuffix("USDT")
+    while True:
+        if not state.get("options_enabled"):
+            await asyncio.sleep(1)
+            continue
+        if args.replay or coin not in ("BTC", "ETH"):
+            state["options_error"] = "Options context unavailable for this instrument/replay; no options history was recorded."
+            await asyncio.sleep(1)
+            continue
+        if time.time() - state.get("options_ts", 0) < 60:
+            await asyncio.sleep(1)
+            continue
+        try:
+            def fetch():
+                url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={coin}&kind=option"
+                request = urllib.request.Request(url, headers={"User-Agent":"alpharch"})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return json.load(response)["result"]
+            chain = await asyncio.to_thread(fetch)
+            if state.get("options_enabled"):
+                state["options_chain"] = [{k:r.get(k) for k in ("instrument_name","open_interest","volume","mark_iv")} for r in chain]
+                state["options_ts"] = time.time()
+                state["options_error"] = ""
+        except (OSError, ValueError, KeyError):
+            state["options_error"] = "Deribit context unavailable; stale levels retire after 120 seconds."
+            await asyncio.sleep(10)
+
+
 async def main_async(args):
     eng = Engine(args.tick, args.bucket, args.large, args.imbalance)
     eng.symbol = args.symbol
+    eng.replay_paused = args.start_paused
     feedname = args.exchange + (" perp" if args.market == "perp" else "")
-    rec = Recorder(args.record, feedname, args.symbol) if args.record else None
-    state = {"view": args.view, "eng": eng}
+    rec = Recorder(args.record, feedname, args.symbol, args.tick) if args.record else None
+    state = {"view": args.view, "eng": eng, "level_tracker": LevelTracker()}
 
     def on_event():
         pass
@@ -1446,7 +1673,16 @@ async def main_async(args):
         return
 
     if args.canvas:
-        tasks = [feed_task(eng, args, rec, on_event), canvas_server(eng, args, state),
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+        from alpharch_execution import PaperAccount
+        paper_dir = os.path.join(os.path.dirname(CTRL_DIR), "paper")
+        os.makedirs(paper_dir, mode=0o700, exist_ok=True)
+        # Separate replay drills from live-source simulation and preserve order history.
+        import hashlib
+        identity = args.symbol + ":" + (os.path.realpath(args.replay) if args.replay else args.exchange)
+        ledger = hashlib.sha256(identity.encode()).hexdigest()[:24] + ".sqlite3"
+        state["paper"] = PaperAccount(os.path.join(paper_dir, ledger), args.symbol)
+        tasks = [feed_task(eng, args, rec, on_event), canvas_server(eng, args, state), options_context(args, state),
                  ctrl_server(eng, args, state)]
         if args.exchange == "binance" and args.market == "perp" and not args.replay:
             tasks.append(oi_poll(eng, args.symbol))
@@ -1486,7 +1722,7 @@ def main():
     ap.add_argument("--symbol", default=None,
                     help="BTC-USD (coinbase), BTCUSDT (binance) or BTC (hyperliquid)")
     ap.add_argument("--view", choices=list(VIEWS), default="flow")
-    ap.add_argument("--tick", type=float, default=10.0, help="price grid size")
+    ap.add_argument("--tick", type=float, default=None, help="price grid size (tape metadata or 10)")
     ap.add_argument("--bucket", type=int, default=60, help="footprint column seconds")
     ap.add_argument("--large", type=float, default=8.0, help="big print = N × mean size")
     ap.add_argument("--imbalance", type=float, default=3.0, help="imbalance ratio")
@@ -1500,16 +1736,27 @@ def main():
     ap.add_argument("--json", action="store_true", help="raw trade stream on stdout")
     ap.add_argument("--canvas", action="store_true",
                     help="serve the flow canvas (real-pixel renderer) on localhost")
+    ap.add_argument("--start-paused", action="store_true", help="open replay paused for review/restore")
+    ap.add_argument("--no-open", action="store_true", help="serve without opening a desktop window")
     ap.add_argument("--port", type=int, default=7860, help="canvas port")
     args = ap.parse_args()
 
     # A tape knows which instrument and feed it recorded; trust it over the
     # defaults, or a hyperliquid BTC tape replays labelled BTC-USD (coinbase spot).
     args.replay_feed = ""
-    head = read_tape_header(args.replay) if args.replay else None  # analyze exits earlier
+    head = read_tape_header(args.replay or args.analyze) if (args.replay or args.analyze) else None
     if head:
         args.symbol = args.symbol or head.get("symbol") or None
-        args.replay_feed = head.get("feed") or ""
+        args.replay_feed = head.get("feed") or "recorded tape"
+        if head.get("market") == "futures":
+            args.market = "futures"
+        args.depth_levels = head.get("depth_levels")
+    args.min_tick = (head or {}).get("min_tick", (head or {}).get("tick"))
+    args.tick = args.tick if args.tick is not None else ((head or {}).get("tick") or 10.0)
+    for name in ("tick", "speed", "refresh", "bucket", "large", "imbalance"):
+        value = getattr(args, name)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            ap.error(f"--{name} must be finite and positive")
     if args.symbol is None:
         args.symbol = {"binance": "BTCUSDT", "hyperliquid": "BTC"}.get(args.exchange, "BTC-USD")
     if args.market is None:

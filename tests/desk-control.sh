@@ -10,9 +10,8 @@ bad(){ printf '  %b✗%b %s\n' "$RED" "$R" "$1"; fail=$((fail+1)); }
 ALPHARCH_STATE="$(mktemp -d)"
 export ALPHARCH_STATE
 python3 - <<'PY' && ok "apply_ctrl validates and applies" || bad "apply_ctrl validates and applies"
-import importlib.util, shutil, sys
-shutil.copy("bin/alphad", "/tmp/_ad_dc.py")
-spec = importlib.util.spec_from_file_location("_ad_dc", "/tmp/_ad_dc.py")
+import importlib.util, importlib.machinery, sys
+spec = importlib.util.spec_from_loader("_ad_dc", importlib.machinery.SourceFileLoader("_ad_dc", "bin/alphad"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 eng = m.Engine(10, 60, 8, 3); state = {"view": "flow"}
 r = m.apply_ctrl(eng, state, {"view":"heat","tick":25,"bars":{"mode":"range","range":40},"indicators":{"vwap":True}})
@@ -22,8 +21,8 @@ sys.exit(0)
 PY
 
 python3 - <<'PY' && ok "hostile input applies nothing" || bad "hostile input applies nothing"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("_ad_dc", "/tmp/_ad_dc.py")
+import importlib.util, importlib.machinery, sys
+spec = importlib.util.spec_from_loader("_ad_dc", importlib.machinery.SourceFileLoader("_ad_dc", "bin/alphad"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 eng = m.Engine(10, 60, 8, 3); state = {"view": "flow"}
 r = m.apply_ctrl(eng, state, {"view":"x; rm -rf /","tick":-1,"bars":{"mode":"range","range":1e12},
@@ -33,8 +32,8 @@ sys.exit(0)
 PY
 
 python3 - <<'PY' && ok "range bars roll on travel, not time" || bad "range bars roll on travel, not time"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("_ad_dc", "/tmp/_ad_dc.py")
+import importlib.util, importlib.machinery, sys
+spec = importlib.util.spec_from_loader("_ad_dc", importlib.machinery.SourceFileLoader("_ad_dc", "bin/alphad"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 eng = m.Engine(1, 60, 8, 3); eng.bar_mode = "range"; eng.bar_range = 10
 t = 1000.0
@@ -45,8 +44,8 @@ sys.exit(0)
 PY
 
 python3 - <<'PY' && ok "vwap series is the true volume-weighted mean" || bad "vwap series correctness"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("_ad_dc", "/tmp/_ad_dc.py")
+import importlib.util, importlib.machinery, sys
+spec = importlib.util.spec_from_loader("_ad_dc", importlib.machinery.SourceFileLoader("_ad_dc", "bin/alphad"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 eng = m.Engine(1, 60, 8, 3)
 eng.on_trade(m.Trade(1, 100, 1, "buy")); eng.on_trade(m.Trade(2, 200, 3, "sell"))

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Convert single-contract Databento trades/MBP CSV exports to Alpharch replay."""
+import argparse
+import csv
+import json
+import math
+import os
+import tempfile
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+
+
+def timestamp(value):
+    if value.isdigit():
+        return int(value) / 1e9
+    dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        raise ValueError('timestamps must include a timezone or be integer nanoseconds')
+    return dt.timestamp()
+
+
+def convert(source, destination, symbol, tick, schema, prices):
+    if not math.isfinite(tick) or tick <= 0:
+        raise ValueError('tick must be finite and positive')
+    depth = {'trades': 0, 'mbp-1': 1, 'mbp-10': 10}[schema]
+    count = skipped = 0
+    identity = None
+    previous = float('-inf')
+    temp = None
+
+    def price(value):
+        if value in ('', 'NaN', 'nan', '9223372036854775807'):
+            return None
+        result = float(Decimal(value) / (Decimal(10)**9 if prices == 'fixed' else 1))
+        if not math.isfinite(result):
+            raise ValueError('non-finite price')
+        return result
+
+    try:
+        with open(source, newline='') as src, tempfile.NamedTemporaryFile(
+                mode='w', dir=Path(destination).absolute().parent, delete=False) as out:
+            temp = out.name
+            rows = csv.DictReader(src)
+            required = {'ts_event', 'action', 'side', 'price', 'size', 'instrument_id'}
+            for i in range(depth):
+                required.update(f'{side}_{field}_{i:02d}' for side in ('bid', 'ask') for field in ('px', 'sz'))
+            if not required.issubset(rows.fieldnames or []):
+                raise ValueError('CSV missing fields: ' + ', '.join(sorted(required - set(rows.fieldnames or []))))
+            def write(event):
+                out.write(json.dumps(event, allow_nan=False) + '\n')
+            write({'k': 'h', 'ts': 0, 'feed': 'databento CSV ' + schema,
+                   'symbol': symbol, 'tick': tick, 'market': 'futures',
+                   'depth_levels': depth, 'size_unit': 'contracts'})
+            for line, row in enumerate(rows, 2):
+                try:
+                    if 'symbol' in row and row['symbol'] != symbol:
+                        continue
+                    key = (row.get('publisher_id', ''), row['instrument_id'])
+                    if not key[1]:
+                        raise ValueError('missing instrument_id')
+                    if identity is not None and key != identity:
+                        raise ValueError('multiple instruments; export one dated contract or include a symbol column')
+                    identity = key
+                    ts = timestamp(row.get('ts_recv') or row['ts_event'])
+                    if not math.isfinite(ts) or ts < previous:
+                        raise ValueError('timestamps out of order; export in receive order')
+                    previous = ts
+                    if depth:
+                        book = {}
+                        for side in ('bid', 'ask'):
+                            levels = []
+                            for i in range(depth):
+                                p = price(row[f'{side}_px_{i:02d}'])
+                                q = int(row[f'{side}_sz_{i:02d}'])
+                                if q < 0:
+                                    raise ValueError('negative book quantity')
+                                if p is not None and q > 0:
+                                    levels.append([p, q])
+                            book[side + 's'] = levels
+                        write({'k': 'b', 'ts': ts, **book})
+                        count += 1
+                    if row['action'] == 'T':
+                        if row['side'] not in ('A', 'B'):
+                            skipped += 1
+                            continue
+                        p, q = price(row['price']), int(row['size'])
+                        if p is None or q <= 0:
+                            raise ValueError('invalid trade price or size')
+                        write({'k': 't', 'ts': ts, 'p': p, 's': q,
+                               'a': 'buy' if row['side'] == 'B' else 'sell'})
+                        count += 1
+                except (ValueError, ArithmeticError) as exc:
+                    raise ValueError(f'CSV line {line}: {exc}') from exc
+            if not count:
+                raise ValueError('no usable events for the requested contract')
+        os.link(temp, destination)
+    finally:
+        if temp:
+            os.unlink(temp)
+    return {'events': count, 'unknown_side_trades_skipped': skipped,
+            'output': str(destination)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source', help='uncompressed Databento CSV export')
+    parser.add_argument('destination', help='new JSONL replay file (must not exist)')
+    parser.add_argument('--symbol', required=True, help='exact dated contract, e.g. ESU6; no automatic rollover')
+    parser.add_argument('--tick', type=float, required=True, help='contract minimum price increment')
+    parser.add_argument('--schema', choices=['trades', 'mbp-1', 'mbp-10'], required=True)
+    parser.add_argument('--prices', choices=['decimal', 'fixed'], required=True,
+                        help='decimal prices or raw integers scaled by 1e9; never guessed')
+    args = parser.parse_args()
+    try:
+        print(json.dumps(convert(**vars(args))))
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f'Futures import: {exc}\n')
+
+
+if __name__ == '__main__':
+    main()

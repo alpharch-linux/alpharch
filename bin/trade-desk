@@ -32,16 +32,16 @@ seed_desk() {
 # Views switch live inside alphad too: f/d/h/t/p/l.
 
 [1]
-name = "FLOW"
-run  = "$(term_run alphad --view flow)"
+name = "CHART"
+run  = "trade-workspace"
 
 [2]
 name = "DOM"
-run  = "$(term_run alphad --view dom)"
+run  = "$(term_run trade-flow "''" dom)"
 
 [3]
 name = "HEAT"
-run  = "$(term_run alphad --view heat)"
+run  = "$(term_run trade-flow "''" heat)"
 
 [4]
 name = "OPTIONS"

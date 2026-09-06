@@ -3,11 +3,16 @@
 **The trading layer for [Omarchy](https://omarchy.org).**
 Linux is for traders. The exchanges run Linux — now you do.
 
-Alpharch is an overlay, not a fork. It installs on top of a stock Omarchy
-system in seconds and adds the complete free-data trading stack: order
-flow in six live views, options flow, a multi-monitor desk, a command
-bar, session clocks, tape recording and replay, a journal, and two house
-themes. `uninstall.sh` removes every trace. Your Omarchy stays yours.
+Alpharch adds a futures and crypto trading workspace to Omarchy Linux. The
+**1.8.0-alpha.1 public preview** includes the new live chart desk: resizable
+charts, starting layouts, indicators, drawings, order flow, local recording
+and replay. Terminal tools, the journal, calendar and optional house themes
+remain available. Your configuration and journal are preserved by uninstall.
+
+Public crypto feeds are available in the preview. The read-only IBKR futures
+bridge still needs real-account acceptance; Rithmic/CQG and live execution are
+not implemented. The optional paid hosted assistant is planned, not launched.
+See [release notes](docs/releases/1.8.0-alpha.1.md) for tested behavior and limits.
 
 *Est. 2026 · [alpharch.org](https://alpharch.org)*
 
@@ -15,7 +20,7 @@ themes. `uninstall.sh` removes every trace. Your Omarchy stays yours.
 
 ## Install
 
-Install [Omarchy](https://omarchy.org), then run this. That's it.
+On an existing [Omarchy](https://omarchy.org) installation:
 
 ```bash
 curl -fsSL https://alpharch.org/install | bash
@@ -29,10 +34,17 @@ cd alpharch && ./install.sh
 sudo pacman -S python-websockets   # the one dependency for live flow
 ```
 
-Then `alpharch doctor` checks every dependency and feed.
+Open **Alpharch Live Desk** from the app launcher, press **SUPER+ALT+V**, or run
+`trade-workspace`. First launch offers Bitcoin, crypto overview, single chart
+and blank desks. Existing installs can run `alpharch update`, then reopen the
+desk. `alpharch version` should report `1.8.0-alpha.1`.
+
+`alpharch doctor` checks dependencies and feed reachability. The optional IBKR
+bridge needs the official SDK and your signed-in local gateway; it is not
+needed for public crypto charts. [Live desk guide](docs/live-desk-guide.md).
 
 Flags: `--no-theme` keeps your current theme, `--no-branding` keeps
-Omarchy's fastfetch logo and screensaver.
+Omarchy's fastfetch logo and screensaver. `--no-keybindings` leaves your existing shortcuts alone.
 
 ## The Line
 
@@ -199,7 +211,7 @@ a sentence and goes back to your record. Every answer ends the same way:
 > Your record, read back to you. Never advice.
 
 That is a bright line, not a setting, and `tests/brain-fence.sh` asks a real
-model for picks, forecasts, stops and sizing every release to prove it holds.
+model for picks, forecasts, stops and sizing when the Brain changes. This preview keeps Brain code unchanged and passes its offline checks; no live model call was made for this release.
 
 ## Feeds — the honest part
 
@@ -228,14 +240,13 @@ CME futures depth (ES, NQ, CL…) requires a paid feed — Rithmic,
 Databento, or a broker entitlement. Equity/index options flow requires
 OPRA. Alpharch does not fake those numbers, does not scrape delayed
 data and present it as live, and does not print a footprint it cannot
-verify. When you plug in a real feed, the same engine renders it.
+verify. Provider access alone is not enough: an implemented adapter and tested connection are also required. The preview includes a read-only IBKR bridge awaiting real-account acceptance and a Databento CSV importer for owner-supplied licensed files. See [connection status](docs/connections-development.md).
 
 ## What Alpharch will never do
 
 No signals. No picks. No AI that trades. Nothing here tells you to buy
 or sell — these are tools for reading markets, and the reading is
-yours. Your journal and config are plain files on your disk. Nothing
-phones home.
+yours. Your journal and config are plain files on your disk. Market data connects to the selected providers. The optional Brain sends selected context through your own Claude CLI; it is not offline inference.
 
 There is a model in the box now, and the promise did not change. The Desk
 Brain reads your own past record and is fenced against forecasts, picks,

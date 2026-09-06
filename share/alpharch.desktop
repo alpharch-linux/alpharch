@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Alpharch Live Desk
+Comment=Live charts, order flow and local session review
+Exec=trade-workspace
+Icon=utilities-terminal
+Terminal=false
+Categories=Office;Finance;
+Keywords=charts;markets;orderflow;trading;
+StartupNotify=true

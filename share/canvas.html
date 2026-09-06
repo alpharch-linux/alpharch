@@ -1,457 +1,3036 @@
 <!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>alphad — flow canvas</title>
-<style>
-  html, body { margin:0; height:100%; background:#04060b; overflow:hidden; }
-  #wrap { position:relative; width:100%; height:100%; cursor: crosshair; }
-  canvas { display:block; position:absolute; inset:0; width:100%; height:100%; }
-  #ov { pointer-events:none; }
-  .hud { position:absolute; font-family:"JetBrains Mono","Cascadia Mono",ui-monospace,monospace; pointer-events:none; }
-  #hdr { top:20px; left:26px; }
-  #sym { font-size:21px; font-weight:700; color:#edf1f8; letter-spacing:.04em; }
-  #px  { font-size:21px; font-weight:600; color:#e8a33d; margin-left:14px; }
-  #chg { font-size:15px; margin-left:10px; }
-  #sub { margin-top:5px; font-size:11.5px; color:#556070; letter-spacing:.06em; }
-  #feed { top:22px; right:118px; max-width:520px; text-align:right; font-size:11.5px; color:#556070; letter-spacing:.08em; }
-  #feed .spec { color:#7d8798; border:1px solid #2a3040; border-radius:3px; padding:2px 7px; margin-left:8px; }
-  #dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:1px;
-         background:#556070; }
-  #dot.live { background:#46b37b; box-shadow:0 0 6px #46b37b88; }
-  #dot.replay { background:#e8a33d; box-shadow:0 0 6px #e8a33d88; }
-  #dot.down { background:#dc5057; }
-  #mark { bottom:130px; right:104px; font-size:11px; color:#3d4452; letter-spacing:.14em; }
-  #hints { bottom:116px; left:26px; font-size:11px; color:#3d4452; letter-spacing:.08em; }
-  #hints b { color:#556070; font-weight:600; }
-  #wait { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-          flex-direction:column; gap:14px; color:#556070; font-family:"JetBrains Mono",monospace; }
-  #wait .pulse { width:10px; height:10px; border-radius:50%; background:#e8a33d; animation:pu 1.2s ease-in-out infinite; }
-  @keyframes pu { 0%,100%{opacity:.25; transform:scale(.8)} 50%{opacity:1; transform:scale(1.15)} }
-  #wait .t { font-size:13px; letter-spacing:.08em; }
-  #wait .s { font-size:11px; color:#3d4452; }
-</style>
-</head>
-<body>
-<div id="wrap">
-  <canvas id="cv"></canvas>
-  <canvas id="ov"></canvas>
-  <div class="hud" id="hdr">
-    <span id="sym">—</span><span id="px">—</span><span id="chg"></span>
-    <div id="sub">order flow · the book through time</div>
-  </div>
-  <div class="hud" id="feed"></div>
-  <div class="hud" id="hints"><b>scroll</b> zoom · <b>drag</b> pan · <b>double-click</b> reset</div>
-  <div class="hud" id="mark">A L P H A R C H</div>
-  <div id="wait"><div class="pulse"></div><div class="t">connecting to the feed…</div>
-    <div class="s">the canvas draws the moment data arrives</div></div>
-</div>
-<script>
-"use strict";
-// ── The Pit ──────────────────────────────────────────────────────────────
-const C = {
-  bg0:"#04060b", bg1:"#0a0d14",
-  amber:[232,163,61], amberHex:"#e8a33d", hot:"#fff3dc",
-  up:"#46b37b", down:"#dc5057",
-  text:"#c6cfdf", dim:"#7d8798", faint:"#556070", grid:"#141927",
-  head:"#edf1f8",
-};
-const cv = document.getElementById("cv");
-const ctx = cv.getContext("2d");
-const ov = document.getElementById("ov");
-const octxTop = ov.getContext("2d");
-const wrap = document.getElementById("wrap");
-let S = null;                 // engine state
-let demo = false;
-let linkDown = false;
-
-// view window: fractions of the full data span (0..1). null = follow live.
-const view = { a: null, b: null };
-const mouse = { x: -1, y: -1, in: false, drag: false, dragX: 0 };
-let geom = null;              // last draw geometry for crosshair mapping
-
-function fit() {
-  const d = window.devicePixelRatio || 1;
-  for (const c of [cv, ov]) {
-    c.width = c.clientWidth * d; c.height = c.clientHeight * d;
-    c.getContext("2d").setTransform(d, 0, 0, d, 0, 0);
-  }
-  if (S) { draw(); drawOverlay(); }
-}
-window.addEventListener("resize", fit);
-
-// ── data ────────────────────────────────────────────────────────────────
-function setDot(cls) {
-  const f = document.getElementById("feed");
-  const dot = `<span id="dot" class="${cls}"></span>`;
-  f.innerHTML = dot + (S ? `${S.feed} · alphad canvas` : "alphad canvas")
-    + (demo ? `<span class="spec">SPECIMEN DATA</span>` : "");
-}
-function connect() {
-  try {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onmessage = e => { S = JSON.parse(e.data); demo = false; linkDown = false;
-      document.getElementById("wait").style.display = "none";
-      setDot("live"); draw(); drawOverlay(); };
-    ws.onerror = () => fallback();
-    ws.onclose = () => { if (S && !demo) { linkDown = true; setDot("down"); } setTimeout(connect, 3000); };
-  } catch (e) { fallback(); }
-}
-let fell = false;
-function fallback() {
-  if (fell) return; fell = true;
-  fetch("demo-state.json").then(r => r.json()).then(j => { S = j; demo = true;
-    document.getElementById("wait").style.display = "none";
-    setDot("replay"); draw(); drawOverlay(); })
-    .catch(() => {});
-}
-connect(); setTimeout(() => { if (!S) fallback(); }, 1200);
-
-// ── helpers ─────────────────────────────────────────────────────────────
-const fmt = p => p >= 10000 ? p.toLocaleString("en-US", {maximumFractionDigits:0})
-                            : p.toLocaleString("en-US", {maximumFractionDigits:2});
-function niceStep(range, maxTicks) {
-  const raw = range / maxTicks, mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  for (const m of [1, 2, 2.5, 5, 10]) if (raw / mag <= m) return m * mag;
-  return 10 * mag;
-}
-function fullSpan() {
-  const t0 = S.buckets.length ? S.buckets[0].t : S.heat[0].t;
-  const t1 = S.heat[S.heat.length - 1].t;
-  return [t0, t1 + (t1 - t0) * 0.015];
-}
-function viewSpan() {
-  const [f0, f1] = fullSpan();
-  if (view.a === null) return [f0, f1];
-  return [f0 + (f1 - f0) * view.a, f0 + (f1 - f0) * view.b];
-}
-
-// ── render ──────────────────────────────────────────────────────────────
-function draw() {
-  if (!S || !S.heat || !S.heat.length) return;
-  const W = cv.clientWidth, H = cv.clientHeight;
-  const AX = 86;                       // right price axis
-  const CVDH = 104;                    // bottom strip
-  const plot = { x:0, y:0, w: W - AX, h: H - CVDH };
-
-  const [t0, tEnd] = viewSpan();
-  const [f0, f1] = fullSpan();
-  const seamT = f0 + (f1 - f0) * 0.40;
-
-  // price domain: fit to what's visible, padded
-  let pLo = Infinity, pHi = -Infinity;
-  for (const h of S.heat) if (h.t >= t0 - 1 && h.t <= tEnd + 1) {
-    if (h.mid < pLo) pLo = h.mid; if (h.mid > pHi) pHi = h.mid;
-    for (const k in h.cols) { const p = +k; if (p < pLo) pLo = p; if (p > pHi) pHi = p; }
-  }
-  for (const b of S.buckets) if (b.t + 60 >= t0 && b.t <= tEnd && b.h >= b.l) {
-    if (b.l < pLo) pLo = b.l; if (b.h > pHi) pHi = b.h;
-  }
-  if (!isFinite(pLo)) { pLo = S.low; pHi = S.high; }
-  const pPad = (pHi - pLo) * 0.10 + S.tick;
-  pLo -= pPad; pHi += pPad;
-
-  const X = t => plot.x + (t - t0) / (tEnd - t0) * plot.w;
-  const Y = p => plot.y + (pHi - p) / (pHi - pLo) * plot.h;
-  geom = { t0, tEnd, pLo, pHi, plot, AX, CVDH };
-
-  // ground
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, C.bg1); g.addColorStop(1, C.bg0);
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-
-  // horizontal grid at nice price steps
-  const step = niceStep(pHi - pLo, 9);
-  ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
-  ctx.font = "11px ui-monospace,monospace";
-  for (let p = Math.ceil(pLo/step)*step; p < pHi; p += step) {
-    const y = Math.round(Y(p)) + .5;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(plot.w, y); ctx.stroke();
-    ctx.fillStyle = C.faint; ctx.textAlign = "left";
-    ctx.fillText(fmt(p), plot.w + 12, y + 4);
-  }
-
-  // ── the fog: book liquidity through time (right world) ────────────────
-  const cols = S.heat.filter(h => h.t >= Math.max(seamT, t0 - 5) && h.t <= tEnd + 5);
-  if (cols.length > 1) {
-    const tick = S.tick;
-    const rows = Math.ceil((pHi - pLo) / tick);
-    const gw = cols.length, gh = Math.max(rows, 1);
-    const off = document.createElement("canvas");
-    off.width = gw; off.height = gh;
-    const octx = off.getContext("2d");
-    const img = octx.createImageData(gw, gh);
-    const all = [];
-    for (const c of cols) for (const k in c.cols) { const q = c.cols[k]; if (q > 0) all.push(q); }
-    all.sort((a,b) => a-b);
-    const qref = all.length ? all[Math.floor(all.length * 0.90)] : 1;
-    const walls = [];
-    const [ar, ag, ab] = C.amber;
-    for (let i = 0; i < gw; i++) {
-      const c = cols[i];
-      for (const k in c.cols) {
-        const p = +k, q = c.cols[k];
-        const r = Math.floor((pHi - p) / tick);
-        if (r < 0 || r >= gh) continue;
-        const idx = (r * gw + i) * 4;
-        const hotcell = q >= 4.2 * qref;
-        const inten = Math.min(1, Math.pow(q / qref, 0.8));
-        if (hotcell) {
-          const fadeH = Math.min(1, i / 6);
-          img.data[idx] = 255; img.data[idx+1] = 240; img.data[idx+2] = 214; img.data[idx+3] = Math.floor(235 * fadeH);
-          walls.push([i, r]);
-        } else {
-          img.data[idx] = ar; img.data[idx+1] = ag; img.data[idx+2] = ab;
-          const fade = Math.min(1, i / 6);
-          img.data[idx+3] = Math.floor((16 + 150 * inten) * fade);
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Alpharch — Trading workspace</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c1426;
+        --panel: #111d34;
+        --line: #283653;
+        --text: #edf2ff;
+        --muted: #a5b4d0;
+        --accent: #f0b96a;
+        --up: #46d8b5;
+        --down: #ff7f94;
+        --rail: 300px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          12px "IBM Plex Sans",
+          system-ui,
+          sans-serif;
+      }
+      button,
+      select,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 0;
+        padding: 7px 9px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover,
+      button.active {
+        color: var(--accent);
+      }
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 3px;
+      }
+      select {
+        color-scheme: dark;
+      }
+      select option {
+        background: #171a16;
+      }
+      input {
+        min-width: 0;
+      }
+      label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      header {
+        height: 56px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        margin: 0 22px;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand {
+        font:
+          italic 27px Georgia,
+          serif;
+        letter-spacing: -1px;
+      }
+      .brand:before {
+        content: none;
+      }
+      .edition {
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--muted);
+        letter-spacing: 0.18em;
+        border-left: 1px solid var(--line);
+        padding-left: 18px;
+      }
+      .badge {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 0.12em;
+        color: var(--accent);
+        border: 1px solid var(--line);
+        padding: 4px 6px;
+      }
+      header > .badge {
+        display: none;
+      }
+      #status {
+        margin-left: auto;
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--accent);
+      }
+      #specimen {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+      }
+      .header-action {
+        border: 0;
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--muted);
+        text-transform: uppercase;
+        padding: 10px;
+      }
+      .tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .tools input[type="number"] {
+        width: 90px;
+      }
+      .divider {
+        display: none;
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(280px, 1fr) 1px var(--rail);
+        flex: 1;
+        min-height: 0;
+        padding: 0 22px 0 0;
+      }
+      .main {
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding-left: 64px;
+        position: relative;
+      }
+      .quote {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        padding: 25px 0 5px;
+      }
+      .quote:before {
+        content: "01";
+        position: absolute;
+        left: 24px;
+        top: 32px;
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--accent);
+      }
+      #symbol {
+        font:
+          500 25px "IBM Plex Sans",
+          system-ui,
+          sans-serif;
+        letter-spacing: -1px;
+      }
+      #last {
+        font:
+          28px "IBM Plex Mono",
+          ui-monospace,
+          monospace;
+        letter-spacing: -1.4px;
+      }
+      #change {
+        font:
+          10px ui-monospace,
+          monospace;
+      }
+      .sub {
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--muted);
+        padding: 3px 16px 14px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        line-height: 1.6;
+      }
+      .stats {
+        display: flex;
+        gap: 24px;
+        padding: 0 18px 20px 0;
+        color: var(--muted);
+        font:
+          9px ui-monospace,
+          monospace;
+        letter-spacing: 0.08em;
+      }
+      .stats span {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+      }
+      .stats b {
+        font:
+          11px ui-monospace,
+          monospace;
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      .chartbar {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        height: 37px;
+        margin-right: 16px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        font:
+          10px ui-monospace,
+          monospace;
+      }
+      .chartbar button,
+      .chartbar select {
+        border: 0;
+        padding: 7px 0;
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--muted);
+      }
+      .chartbar button.active {
+        color: var(--accent);
+      }
+      .chartbar .chart-caption {
+        color: var(--accent);
+        font-size: 8px;
+        letter-spacing: 0.13em;
+        margin-right: auto;
+      }
+      .chartbar select {
+        max-width: 120px;
+      }
+      .drawing-dock {
+        position: absolute;
+        left: 19px;
+        top: 194px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .drawing-dock button {
+        width: 26px;
+        height: 29px;
+        padding: 0;
+        border: 0;
+        color: var(--muted);
+        font:
+          18px Georgia,
+          serif;
+      }
+      .drawing-dock button.active {
+        color: var(--accent);
+        border-left: 1px solid var(--accent);
+      }
+      #plot {
+        position: relative;
+        flex: 1;
+        min-height: 120px;
+        margin-right: 12px;
+        cursor: crosshair;
+      }
+      canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        text-align: center;
+        gap: 10px;
+        color: var(--muted);
+      }
+      #empty strong {
+        font:
+          italic 24px Georgia,
+          serif;
+        color: var(--text);
+      }
+      #split {
+        background: var(--line);
+        cursor: col-resize;
+      }
+      aside {
+        overflow: auto;
+        background: var(--bg);
+        scrollbar-width: thin;
+        scrollbar-color: var(--line) transparent;
+      }
+      section {
+        padding: 16px 0 16px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      h2 {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-weight: 400;
+        margin: 0 0 15px;
+      }
+      #panel6 h2:before {
+        content: "02 / ";
+        color: var(--accent);
+      }
+      #panel7 h2:before {
+        content: "03 / ";
+        color: var(--accent);
+      }
+      .small {
+        font-size: 10px;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        margin: 10px 0;
+      }
+      .row input {
+        flex: 1;
+        width: 70px;
+      }
+      .depthrow,
+      .taperow {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1.3fr 1fr;
+        align-items: center;
+        text-align: right;
+        font:
+          12px "IBM Plex Mono",
+          ui-monospace,
+          monospace;
+        height: 20px;
+        padding: 2px 8px;
+      }
+      .depthrow span,
+      .taperow span {
+        z-index: 1;
+      }
+      .depthrow:before {
+        content: "";
+        position: absolute;
+        inset: 1px 0 1px auto;
+        width: var(--size);
+        background: var(--text);
+        opacity: 0.055;
+      }
+      .depthrow span:nth-child(2) {
+        color: var(--text);
+      }
+      .depthrow span:not(:nth-child(2)) {
+        color: var(--muted);
+      }
+      .depthhead {
+        display: grid;
+        grid-template-columns: 1fr 1.3fr 1fr;
+        text-align: right;
+        padding: 0 8px 9px;
+        font:
+          9px ui-monospace,
+          monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      #spread {
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--accent);
+        text-align: center;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: 9px;
+        margin: 5px 0;
+      }
+      #bookNote {
+        display: none;
+      }
+      .buy {
+        color: var(--up);
+      }
+      .sell {
+        color: var(--down);
+      }
+      .replay {
+        height: 48px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 8px 22px;
+        border-top: 1px solid var(--line);
+        margin: 0 22px 0 64px;
+      }
+      .replay button,
+      .replay select {
+        border: 0;
+        padding: 6px 0;
+        font:
+          10px ui-monospace,
+          monospace;
+      }
+      .replay .badge {
+        border: 0;
+        padding: 0;
+        letter-spacing: 0.15em;
+      }
+      .replay input {
+        padding: 0;
+      }
+      #seek {
+        flex: 1;
+        height: 2px;
+        accent-color: var(--accent);
+      }
+      #position {
+        font:
+          10px ui-monospace,
+          monospace;
+        color: var(--muted);
+        min-width: 32px;
+      }
+      footer {
+        display: flex;
+        justify-content: space-between;
+        padding: 6px 22px 9px 64px;
+        color: var(--muted);
+        font:
+          9px ui-monospace,
+          monospace;
+        letter-spacing: 0.03em;
+      }
+      #notice {
+        color: var(--muted);
+      }
+      .rail-tabs {
+        display: flex;
+        gap: 18px;
+        padding: 16px 0 14px 18px;
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--bg);
+      }
+      .rail-tabs button {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        border: 0;
+        padding: 0 0 3px;
+      }
+      .rail-tabs button.active {
+        color: var(--accent);
+        border-bottom: 1px solid var(--accent);
+      }
+      .hidden,
+      .tab-hidden {
+        display: none !important;
+      }
+      .compact aside,
+      .compact #split {
+        display: none;
+      }
+      .compact .workspace {
+        grid-template-columns: 1fr;
+      }
+      #watch a {
+        display: block;
+        text-decoration: none;
+        color: var(--text);
+        padding: 8px;
+        border-bottom: 1px solid var(--line);
+      }
+      #alerts div,
+      #orders div {
+        padding: 6px 0;
+      }
+      #annotation {
+        width: 140px;
+      }
+      dialog {
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 28px;
+        width: min(780px, 90vw);
+        max-height: 85vh;
+      }
+      dialog::backdrop {
+        background: #0009;
+      }
+      dialog h1 {
+        font:
+          italic 28px Georgia,
+          serif;
+        font-weight: 400;
+      }
+      dialog section {
+        padding: 20px 0;
+      }
+      dialog .small label {
+        display: inline-block;
+        width: 49%;
+        line-height: 2;
+      }
+      .dialog-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .splash {
+        position: fixed;
+        inset: 0;
+        background: #0c1426;
+        z-index: 20;
+        display: grid;
+        place-content: center;
+        text-align: center;
+        gap: 20px;
+      }
+      .splash .word {
+        font:
+          italic 46px Georgia,
+          serif;
+      }
+      .splash .alpha {
+        font:
+          italic 100px Georgia,
+          serif;
+        color: #f0b96a;
+        animation: reveal 0.8s ease-out;
+      }
+      .splash small {
+        font:
+          10px ui-monospace,
+          monospace;
+        color: #a5b4d0;
+      }
+      .splash button {
+        margin: auto;
+      }
+      @keyframes reveal {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
         }
       }
-    }
-    octx.putImageData(img, 0, 0);
-    const fx = X(cols[0].t), fw = X(cols[cols.length-1].t) - fx + Math.max((X(cols[1].t)-X(cols[0].t)), 2);
-    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(off, fx, Y(pHi), fw, Y(pLo) - Y(pHi));
-    ctx.save();
-    ctx.shadowColor = "rgba(232,163,61,.9)"; ctx.shadowBlur = 9;
-    ctx.fillStyle = "rgba(255,243,220,.9)";
-    const cw = fw / gw, ch = (Y(pLo) - Y(pHi)) / gh;
-    for (const [i, r] of walls)
-      ctx.fillRect(fx + i * cw, Y(pHi) + r * ch, Math.max(cw, 1.5), Math.max(ch * .8, 1.5));
-    ctx.restore();
-
-    // price path
-    ctx.save();
-    ctx.strokeStyle = C.head; ctx.lineWidth = 1.7;
-    ctx.shadowColor = "rgba(237,241,248,.55)"; ctx.shadowBlur = 6;
-    ctx.beginPath();
-    cols.forEach((c, i) => { const x = X(c.t), y = Y(c.mid);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.stroke();
-    ctx.restore();
-
-    // VWAP — the session's volume-weighted anchor
-    if (S.indicators && S.indicators.vwap && S.vwap && S.vwap.length > 1) {
-      ctx.save();
-      ctx.strokeStyle = "#6ea3c9"; ctx.lineWidth = 1.4;
-      ctx.setLineDash([7, 5]);
-      ctx.beginPath();
-      let started = false;
-      for (const v of S.vwap) {
-        if (v.t < t0 || v.t > tEnd) continue;
-        const x = X(v.t), y = Y(v.v);
-        started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+        }
       }
-      ctx.stroke(); ctx.setLineDash([]);
-      const lastV = S.vwap[S.vwap.length - 1];
-      if (lastV.v >= pLo && lastV.v <= pHi) {
-        ctx.fillStyle = "#6ea3c9"; ctx.font = "600 10px ui-monospace,monospace";
-        ctx.fillText("VWAP " + fmt(lastV.v), Math.min(X(lastV.t) + 8, plot.w - 110), Y(lastV.v) - 6);
+      @media (max-width: 900px) {
+        .edition,
+        #change {
+          display: none;
+        }
+        .main {
+          padding-left: 42px;
+        }
+        .quote:before {
+          left: 12px;
+        }
+        .drawing-dock {
+          left: 8px;
+        }
+        .stats {
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .stats span {
+          gap: 4px;
+        }
+        .chartbar {
+          gap: 10px;
+        }
+        :root {
+          --rail: 255px;
+        }
+        .workspace {
+          padding-right: 12px;
+        }
+        .replay {
+          margin-left: 42px;
+        }
+        .brand {
+          font-size: 23px;
+        }
       }
-      ctx.restore();
-    }
+      @media (max-width: 620px) {
+        aside,
+        #split {
+          display: none;
+        }
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+        header {
+          margin: 0 12px;
+          gap: 8px;
+        }
+        #last {
+          font-size: 23px;
+        }
+        #symbol {
+          font-size: 20px;
+        }
+        .chartbar .chart-caption {
+          display: none;
+        }
+        .main {
+          padding-left: 38px;
+        }
+        .replay {
+          margin-left: 20px;
+          padding-left: 10px;
+        }
+        #specimen {
+          font-size: 7px;
+        }
+        .stats {
+          padding-bottom: 10px;
+        }
+        footer {
+          padding-left: 38px;
+        }
+      }
 
-    // bubbles
-    for (const b of S.bigs.filter(b => b.t >= seamT && b.t >= t0 && b.t <= tEnd)) {
-      const r = Math.min(15, 4.5 + Math.sqrt(b.s) * 2.6);
-      const col = b.a === "buy" ? C.up : C.down;
-      ctx.save();
-      ctx.globalAlpha = .92; ctx.fillStyle = col;
-      ctx.shadowColor = col; ctx.shadowBlur = 10;
-      ctx.beginPath(); ctx.arc(X(b.t), Y(b.p), r, 0, 7); ctx.fill();
-      ctx.restore();
-      ctx.strokeStyle = "rgba(4,6,11,.65)"; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(X(b.t), Y(b.p), r, 0, 7); ctx.stroke();
-    }
-  }
-
-  // ── candles (left of the seam) ────────────────────────────────────────
-  const bks = S.buckets.filter(b => b.t + 60 <= seamT && b.h >= b.l && b.t + 60 >= t0 && b.t <= tEnd);
-  if (bks.length) {
-    const bw = Math.max(3, (X(bks[0].t + 60) - X(bks[0].t)) * 0.62);
-    for (const b of bks) {
-      const xm = X(b.t + 30);
-      const up = b.c >= b.o;
-      const col = up ? C.up : C.down;
-      ctx.strokeStyle = col; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(xm, Y(b.h)); ctx.lineTo(xm, Y(b.l)); ctx.stroke();
-      const yO = Y(b.o), yC = Y(b.c);
-      const top = Math.min(yO, yC), hgt = Math.max(Math.abs(yC - yO), 1.6);
-      ctx.fillStyle = col;
-      if (up) { ctx.globalAlpha = .28; ctx.fillRect(xm - bw/2, top, bw, hgt);
-                ctx.globalAlpha = 1; ctx.strokeRect(xm - bw/2, top, bw, hgt); }
-      else    { ctx.fillRect(xm - bw/2, top, bw, hgt); }
-    }
-  }
-
-  // ── the seam ──────────────────────────────────────────────────────────
-  if (seamT >= t0 && seamT <= tEnd) {
-    const sx = Math.round(X(seamT)) + .5;
-    const sg = ctx.createLinearGradient(0, 0, 0, plot.h);
-    sg.addColorStop(0, "rgba(232,163,61,.05)");
-    sg.addColorStop(.5, "rgba(232,163,61,.75)");
-    sg.addColorStop(1, "rgba(232,163,61,.05)");
-    ctx.strokeStyle = sg; ctx.lineWidth = 2.2;
-    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, plot.h); ctx.stroke();
-  }
-
-  // session high / low
-  ctx.setLineDash([5, 6]); ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(125,135,152,.35)";
-  for (const [p, lab] of [[S.high, "HI"], [S.low, "LO"]]) {
-    if (p < pLo || p > pHi) continue;
-    const y = Math.round(Y(p)) + .5;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(plot.w, y); ctx.stroke();
-    ctx.fillStyle = C.dim; ctx.font = "10px ui-monospace,monospace";
-    ctx.fillText(`${lab} ${fmt(p)}`, 10, y - 5);
-  }
-  ctx.setLineDash([]);
-
-  // last-price tag
-  if (S.last >= pLo && S.last <= pHi) {
-    const ly = Y(S.last);
-    ctx.fillStyle = C.amberHex;
-    const tag = fmt(S.last);
-    ctx.font = "600 12px ui-monospace,monospace";
-    const tw = ctx.measureText(tag).width + 16;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(plot.w + 6, ly - 11, tw, 22, 4); else ctx.rect(plot.w + 6, ly - 11, tw, 22);
-    ctx.fill();
-    ctx.fillStyle = "#0a0d14"; ctx.fillText(tag, plot.w + 14, ly + 4);
-    ctx.strokeStyle = "rgba(232,163,61,.5)";
-    ctx.beginPath(); ctx.moveTo(0, Math.round(ly)+.5); ctx.lineTo(plot.w, Math.round(ly)+.5);
-    ctx.setLineDash([2, 5]); ctx.stroke(); ctx.setLineDash([]);
-  }
-
-  // ── CVD strip ─────────────────────────────────────────────────────────
-  const cy0 = H - CVDH;
-  ctx.fillStyle = "rgba(10,13,20,.85)";
-  ctx.fillRect(0, cy0, W, CVDH);
-  ctx.strokeStyle = C.grid;
-  ctx.beginPath(); ctx.moveTo(0, cy0 + .5); ctx.lineTo(W, cy0 + .5); ctx.stroke();
-  const cs = S.cvds;
-  const cvdOn = !S.indicators || S.indicators.cvd !== false;
-  if (cvdOn && cs && cs.length > 2) {
-    let mn = Infinity, mx = -Infinity;
-    for (const c of cs) { mn = Math.min(mn, c.v); mx = Math.max(mx, c.v); }
-    const pad2 = (mx - mn) * .15 + 1e-9;
-    const Yc = v => cy0 + 14 + (mx + pad2 - v) / (mx - mn + 2*pad2) * (CVDH - 28);
-    const Xc = t => (t - cs[0].t) / (cs[cs.length-1].t - cs[0].t + 1e-9) * plot.w;
-    if (mn < 0 && mx > 0) {
-      ctx.strokeStyle = "rgba(85,96,112,.5)"; ctx.setLineDash([3,5]);
-      ctx.beginPath(); ctx.moveTo(0, Math.round(Yc(0))+.5); ctx.lineTo(plot.w, Math.round(Yc(0))+.5);
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    ctx.strokeStyle = C.amberHex; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    cs.forEach((c, i) => { i ? ctx.lineTo(Xc(c.t), Yc(c.v)) : ctx.moveTo(Xc(c.t), Yc(c.v)); });
-    ctx.stroke();
-    const lastv = cs[cs.length-1].v;
-    ctx.fillStyle = C.dim; ctx.font = "11px ui-monospace,monospace";
-    ctx.fillText(`CVD ${lastv >= 0 ? "+" : ""}${lastv.toFixed(1)}`, 12, cy0 + 22);
-    if (S.funding) {
-      const left = Math.max(0, S.funding.next - Date.now()/1000);
-      const hh = String(Math.floor(left/3600)).padStart(2,"0");
-      const mm = String(Math.floor(left%3600/60)).padStart(2,"0");
-      const fper = S.funding.hours ? `/${S.funding.hours}h` : "";
-      ctx.fillText(`funding${fper} ${(S.funding.rate*100).toFixed(4)}% in ${hh}:${mm}` + (S.oi ? `   OI ${(S.oi/1000).toFixed(1)}K` : ""), 12, cy0 + 40);
-    }
-  }
-
-  // zoom badge
-  if (view.a !== null) {
-    ctx.fillStyle = "rgba(232,163,61,.85)";
-    ctx.font = "600 11px ui-monospace,monospace";
-    ctx.fillText("ZOOMED — double-click to reset", 12, 16);
-  }
-
-  // hud text
-  document.getElementById("sym").textContent = S.symbol;
-  const modeTxt = (S.bars && S.bars.mode === "range")
-      ? `range bars · ${S.bars.range} per bar · the book through time`
-      : "order flow · the book through time";
-  document.getElementById("sub").textContent = modeTxt;
-  document.getElementById("px").textContent = fmt(S.last);
-  const chg = S.open ? (S.last - S.open) / S.open * 100 : 0;
-  const ce = document.getElementById("chg");
-  ce.textContent = `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`;
-  ce.style.color = chg >= 0 ? C.up : C.down;
-  setDot(linkDown ? "down" : (demo ? "replay" : "live"));
-}
-
-// ── crosshair overlay ───────────────────────────────────────────────────
-function drawOverlay() {
-  const W = ov.clientWidth, H = ov.clientHeight;
-  octxTop.clearRect(0, 0, W, H);
-  if (!geom || !mouse.in) return;
-  const { t0, tEnd, pLo, pHi, plot } = geom;
-  if (mouse.x > plot.w || mouse.y > plot.h) return;
-  const t = t0 + (mouse.x / plot.w) * (tEnd - t0);
-  const p = pHi - (mouse.y / plot.h) * (pHi - pLo);
-  octxTop.strokeStyle = "rgba(198,207,223,.35)"; octxTop.lineWidth = 1;
-  octxTop.setLineDash([4, 4]);
-  octxTop.beginPath(); octxTop.moveTo(mouse.x + .5, 0); octxTop.lineTo(mouse.x + .5, plot.h); octxTop.stroke();
-  octxTop.beginPath(); octxTop.moveTo(0, mouse.y + .5); octxTop.lineTo(plot.w, mouse.y + .5); octxTop.stroke();
-  octxTop.setLineDash([]);
-  // price tag on axis
-  octxTop.font = "600 11px ui-monospace,monospace";
-  const ptxt = fmt(p);
-  const pw = octxTop.measureText(ptxt).width + 12;
-  octxTop.fillStyle = "rgba(14,18,32,.95)";
-  octxTop.strokeStyle = "rgba(198,207,223,.4)";
-  octxTop.fillRect(plot.w + 6, mouse.y - 10, pw, 20);
-  octxTop.strokeRect(plot.w + 6.5, mouse.y - 9.5, pw - 1, 19);
-  octxTop.fillStyle = "#c6cfdf";
-  octxTop.fillText(ptxt, plot.w + 12, mouse.y + 4);
-  // time tag at bottom of plot
-  const d = new Date(t * 1000);
-  const ttxt = d.toTimeString().slice(0, 8);
-  const tw = octxTop.measureText(ttxt).width + 12;
-  octxTop.fillStyle = "rgba(14,18,32,.95)";
-  octxTop.fillRect(mouse.x - tw/2, plot.h - 22, tw, 18);
-  octxTop.strokeRect(mouse.x - tw/2 + .5, plot.h - 21.5, tw - 1, 17);
-  octxTop.fillStyle = "#c6cfdf";
-  octxTop.fillText(ttxt, mouse.x - tw/2 + 6, plot.h - 9);
-}
-
-// ── interaction ─────────────────────────────────────────────────────────
-wrap.addEventListener("mousemove", e => {
-  const r = wrap.getBoundingClientRect();
-  const nx = e.clientX - r.left, ny = e.clientY - r.top;
-  if (mouse.drag && geom) {
-    const [f0, f1] = fullSpan();
-    const [a, b] = [view.a ?? 0, view.b ?? 1];
-    const dt = (nx - mouse.dragX) / geom.plot.w * (b - a);
-    let na = a - dt, nb = b - dt;
-    if (na < 0) { nb -= na; na = 0; }
-    if (nb > 1) { na -= (nb - 1); nb = 1; }
-    view.a = na; view.b = nb; mouse.dragX = nx;
-    draw();
-  }
-  mouse.x = nx; mouse.y = ny; mouse.in = true;
-  drawOverlay();
-});
-wrap.addEventListener("mouseleave", () => { mouse.in = false; mouse.drag = false; drawOverlay(); });
-wrap.addEventListener("mousedown", e => { mouse.drag = true; mouse.dragX = e.clientX - wrap.getBoundingClientRect().left; });
-window.addEventListener("mouseup", () => { mouse.drag = false; });
-wrap.addEventListener("dblclick", () => { view.a = null; view.b = null; draw(); drawOverlay(); });
-wrap.addEventListener("wheel", e => {
-  if (!geom) return;
-  e.preventDefault();
-  const [a, b] = [view.a ?? 0, view.b ?? 1];
-  const span = b - a;
-  const cx = Math.min(Math.max(mouse.x / geom.plot.w, 0), 1);
-  const anchor = a + span * cx;
-  const factor = e.deltaY > 0 ? 1.18 : 1/1.18;
-  let ns = Math.min(1, Math.max(0.02, span * factor));
-  let na = anchor - ns * cx, nb = na + ns;
-  if (na < 0) { nb -= na; na = 0; }
-  if (nb > 1) { na -= (nb - 1); nb = 1; }
-  if (nb - na >= 0.999) { view.a = null; view.b = null; }
-  else { view.a = na; view.b = nb; }
-  draw(); drawOverlay();
-}, { passive: false });
-
-fit();
-</script>
-</body>
+      #indicatorBrowser {
+        width: min(1080px, 94vw);
+        padding: 0;
+        max-height: 90vh;
+        border: 1px solid #4b4b3c;
+        background: #131e35;
+        color: #edf2ff;
+      }
+      #indicatorBrowser::backdrop {
+        background: #050605bc;
+      }
+      .library-head {
+        padding: 25px 30px 20px;
+        border-bottom: 1px solid #34425e;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .library-head h1 {
+        font:
+          italic 35px Georgia,
+          serif;
+        margin: 7px 0 0;
+        letter-spacing: -1px;
+      }
+      .folio {
+        font:
+          9px ui-monospace,
+          monospace;
+        letter-spacing: 0.17em;
+        color: #f0b96a;
+      }
+      .library-close {
+        border: 0;
+        font-size: 23px;
+        padding: 0;
+        color: #a5b4d0;
+      }
+      .library-body {
+        display: grid;
+        grid-template-columns: 162px minmax(250px, 1fr) 300px;
+        min-height: 450px;
+      }
+      .library-categories {
+        padding: 24px 18px;
+        border-right: 1px solid #34425e;
+      }
+      .library-categories button {
+        display: block;
+        border: 0;
+        padding: 10px 0;
+        font-size: 11px;
+        width: 100%;
+        text-align: left;
+        color: #a5b4d0;
+      }
+      .library-categories button.active {
+        color: #edf2ff;
+      }
+      .library-categories button.active:before {
+        content: "— ";
+        color: #f0b96a;
+      }
+      .library-main {
+        padding: 22px 24px;
+        max-height: 480px;
+        overflow: auto;
+      }
+      .library-search {
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid #696344;
+        margin-bottom: 18px;
+        color: #f0b96a;
+      }
+      .library-search input {
+        border: 0;
+        outline: 0;
+        padding: 10px;
+        width: 100%;
+        font-size: 13px;
+      }
+      .library-count {
+        font:
+          9px ui-monospace,
+          monospace;
+        color: #a5b4d0;
+        letter-spacing: 0.08em;
+        margin-bottom: 10px;
+      }
+      .study-row {
+        display: flex;
+        align-items: center;
+        padding: 12px 0;
+        border-bottom: 1px solid #2c3955;
+        gap: 12px;
+      }
+      .study-symbol {
+        font:
+          italic 19px Georgia,
+          serif;
+        color: #f0b96a;
+        width: 28px;
+        text-align: center;
+      }
+      .study-copy {
+        flex: 1;
+      }
+      .study-copy strong {
+        display: block;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .study-copy small {
+        display: block;
+        font-size: 10px;
+        color: #a5b4d0;
+        margin-top: 4px;
+      }
+      .study-row button {
+        border: 0;
+        font-size: 19px;
+        padding: 5px 8px;
+        color: #f0b96a;
+      }
+      .study-row button:disabled {
+        font:
+          9px ui-monospace,
+          monospace;
+        color: #777f70;
+        cursor: default;
+      }
+      .on-chart {
+        border-left: 1px solid #34425e;
+        padding: 23px 22px;
+        background: #1c2842;
+      }
+      .on-chart h2 {
+        font:
+          italic 22px Georgia,
+          serif;
+        color: #edf2ff;
+        text-transform: none;
+        letter-spacing: -0.3px;
+        margin-bottom: 5px;
+      }
+      .on-chart .small {
+        font-size: 10px;
+        color: #a3a696;
+      }
+      .active-study {
+        border-bottom: 1px solid #34425e;
+        padding: 12px 0;
+      }
+      .active-study-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .study-swatch {
+        width: 16px;
+        height: 2px;
+        background: #f0b96a;
+      }
+      .active-study button {
+        border: 0;
+        padding: 0;
+        font-size: 11px;
+        text-align: left;
+      }
+      .active-study .study-title {
+        flex: 1;
+        color: #edf2ff;
+      }
+      .active-study small {
+        display: block;
+        font:
+          9px ui-monospace,
+          monospace;
+        color: #9a9f8f;
+        margin: 6px 0 0 24px;
+      }
+      .study-editor {
+        padding-top: 20px;
+      }
+      .study-editor h3 {
+        font:
+          9px ui-monospace,
+          monospace;
+        color: #f0b96a;
+        letter-spacing: 0.12em;
+        font-weight: 400;
+        margin: 0 0 14px;
+      }
+      .study-editor label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 8px 0;
+        font-size: 11px;
+        color: #b1b5a7;
+      }
+      .study-editor input,
+      .study-editor select {
+        width: 119px;
+        border-color: #454a3a;
+        background: #101b31;
+        font-size: 11px;
+        padding: 6px;
+      }
+      .study-editor input[type="color"] {
+        height: 29px;
+      }
+      .library-foot {
+        padding: 12px 30px;
+        border-top: 1px solid #34425e;
+        font:
+          9px ui-monospace,
+          monospace;
+        color: #a3a696;
+        line-height: 1.6;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .library-foot b {
+        font-weight: 400;
+        color: #f0b96a;
+      }
+      @media (max-width: 850px) {
+        .library-body {
+          grid-template-columns: 110px 1fr 240px;
+        }
+        .library-main {
+          padding: 15px;
+        }
+        .library-categories {
+          padding: 18px 10px;
+        }
+        .on-chart {
+          padding: 18px 14px;
+        }
+      }
+      header {
+        background: linear-gradient(100deg, #18274880, transparent 60%);
+        margin: 0;
+        padding: 0 22px;
+        border-bottom-color: #304164;
+      }
+      .brand {
+        color: #f6cc94;
+        font-size: 29px;
+      }
+      .edition {
+        color: #b6a4e4;
+      }
+      #status {
+        color: #c4b0fa;
+      }
+      #specimen {
+        color: #bbc6de;
+      }
+      .quote {
+        padding-top: 22px;
+      }
+      #symbol {
+        font-weight: 650;
+      }
+      #last {
+        color: #f2f6ff;
+      }
+      .stats {
+        font-size: 10px;
+        gap: 18px;
+      }
+      .stats b {
+        font-size: 12px;
+      }
+      .sub {
+        font-size: 10px;
+        color: #a6b4ce;
+      }
+      .chartbar {
+        background: #16243e66;
+        padding-left: 10px;
+      }
+      .chartbar button,
+      .chartbar select {
+        font-size: 11px;
+        color: #bcc9e1;
+      }
+      .chartbar button.active {
+        color: #f4c07a;
+      }
+      .rail-tabs {
+        background: #13213a;
+      }
+      h2 {
+        font-size: 10px;
+        color: #b4c2da;
+      }
+      .depthhead {
+        font-size: 10px;
+      }
+      .depthrow,
+      .taperow {
+        font-size: 12px;
+      }
+      .depthrow:before {
+        background: #94abf8;
+        opacity: 0.1;
+      }
+      .depthrow span:not(:nth-child(2)) {
+        color: #b1c0dc;
+      }
+      .drawing-dock {
+        background: #17243c;
+        border: 1px solid #2d3d5c;
+        border-radius: 14px;
+        padding: 5px 0;
+        left: 14px;
+      }
+      .drawing-dock button {
+        color: #b1bfe0;
+      }
+      .drawing-dock button.active {
+        color: #f0b96a;
+        border-left: 0;
+        background: #34456b;
+        border-radius: 8px;
+      }
+      .timeframe-quick {
+        display: flex;
+        gap: 10px;
+      }
+      .timeframe-quick button {
+        font-weight: 600;
+        color: #9fb0d5;
+      }
+      .timeframe-quick button.selected {
+        color: #f1c68b;
+        border-bottom: 2px solid #f1c68b;
+      }
+      .replay {
+        background: #111d32;
+        margin-right: 22px;
+      }
+      footer {
+        color: #95a7cb;
+      }
+      .on-chart {
+        background: #1c2842;
+      }
+      .library-head {
+        background: linear-gradient(115deg, #253254, #18223b);
+      }
+      .library-head h1 {
+        color: #f6cf9b;
+      }
+      .study-symbol {
+        color: #b6a0ff;
+      }
+      .study-copy small {
+        color: #acbadd;
+      }
+      .study-editor label {
+        color: #bdc9e1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="splash" class="splash hidden">
+      <span class="alpha">α</span><span class="word">ALPHARCH</span
+      ><small id="launchProgress">Connecting to your local workspace</small
+      ><button id="skipSplash">Open workspace now</button>
+    </div>
+    <header>
+      <span class="brand">Alpharch</span><span class="badge">WORKSPACE</span
+      ><span id="specimen"></span
+      ><span id="status" role="status">Connecting to local engine…</span>
+    </header>
+    <nav class="tools" aria-label="Chart controls">
+      <select id="chart" aria-label="Chart type">
+        <option value="candles">Candles</option>
+        <option value="footprint">Footprint</option>
+        <option value="heat">Liquidity heatmap</option>
+        <option value="profile">Volume profile</option>
+      </select>
+      <select id="mode" aria-label="Bar type">
+        <option value="time">Time bars</option>
+        <option value="tick">Tick bars</option>
+        <option value="range">Range bars</option>
+        <option value="volume">Volume bars</option>
+      </select>
+      <select id="timeframe" aria-label="Timeframe">
+        <option value="15">15 seconds</option>
+        <option value="60" selected>1 minute</option>
+        <option value="300">5 minutes</option>
+        <option value="900">15 minutes</option>
+        <option value="3600">1 hour</option>
+        <option value="14400">4 hours</option>
+        <option value="86400">1 day</option>
+      </select>
+      <input
+        id="barvalue"
+        class="hidden"
+        type="number"
+        min="0.0001"
+        value="100"
+        aria-label="Bar size"
+      /><button id="apply">Apply</button><span class="divider"></span>
+      <button id="vwap">VWAP</button
+      ><button id="cvd" class="active">Delta</button
+      ><button id="follow">Fit chart</button>
+      <select id="drawing" aria-label="Drawing tool">
+        <option value="cursor">Crosshair / pan</option>
+        <option value="horizontal">Horizontal line</option>
+        <option value="trend">Trend line</option>
+        <option value="note">Annotation</option></select
+      ><input
+        id="annotation"
+        maxlength="100"
+        placeholder="Annotation text"
+        aria-label="Annotation text"
+      /><button id="undo">Undo drawing</button>
+      <button id="layout">Focus chart</button
+      ><button id="save">Save layout</button
+      ><button id="accessible">Blue / orange</button
+      ><button id="exportLayout">Export layout</button
+      ><label
+        >Import layout
+        <input
+          id="importLayout"
+          type="file"
+          accept="application/json"
+          style="width: 110px"
+      /></label>
+    </nav>
+    <div class="workspace">
+      <main class="main">
+        <div class="quote">
+          <span id="symbol">—</span><span id="last">—</span
+          ><span id="change"></span>
+        </div>
+        <div class="sub" id="source">Waiting for source metadata</div>
+        <div class="stats">
+          <span>SESSION HIGH<b id="high">—</b></span
+          ><span>SESSION LOW<b id="low">—</b></span
+          ><span>SESSION VWAP<b id="vwapValue">—</b></span
+          ><span>CUMULATIVE DELTA<b id="deltaValue">—</b></span
+          ><span id="extra"></span>
+        </div>
+        <div id="plot">
+          <canvas id="chartCanvas"></canvas>
+          <div id="empty">
+            <strong>Your market, in one workspace</strong
+            ><span>Waiting for market events. No prices are simulated.</span>
+          </div>
+        </div>
+      </main>
+      <div
+        id="split"
+        role="separator"
+        aria-label="Resize side panels"
+        aria-orientation="vertical"
+        tabindex="0"
+      ></div>
+      <aside>
+        <section id="settingsPanel">
+          <h2>Workspace settings</h2>
+          <select id="presetName" aria-label="Saved layout"></select>
+          <div class="row">
+            <input
+              id="newPreset"
+              placeholder="Preset name"
+              aria-label="Preset name"
+            /><button id="storePreset">Save preset</button>
+          </div>
+          <div class="row">
+            <button id="loadPreset">Load</button
+            ><button id="deletePreset">Delete</button>
+          </div>
+          <div id="panelToggles" class="small"></div>
+          <button id="resetPreferences">Reset view preferences</button>
+        </section>
+        <section id="technicalPanel">
+          <h2>Technical indicators</h2>
+          <div class="row">
+            <select id="overlayIndicator" aria-label="Price overlay">
+              <option value="">No price overlay</option>
+              <option value="sma">SMA</option>
+              <option value="ema">EMA</option>
+              <option value="bollinger">Bollinger Bands (2σ)</option>
+            </select>
+          </div>
+          <div class="row">
+            <select id="paneIndicator" aria-label="Indicator pane">
+              <option value="">No indicator pane</option>
+              <option value="rsi">RSI</option>
+              <option value="macd">MACD (12/26/9)</option>
+              <option value="atr">ATR</option>
+              <option value="stochastic">Stochastic (%D 3)</option>
+              <option value="volume">Volume</option>
+            </select>
+          </div>
+          <div class="row">
+            <input
+              id="indicatorPeriod"
+              type="number"
+              min="2"
+              max="200"
+              value="14"
+              aria-label="Indicator period"
+            /><select id="indicatorSource" aria-label="Indicator source">
+              <option>close</option>
+              <option>open</option>
+              <option>high</option>
+              <option>low</option>
+              <option>hlc3</option></select
+            ><button id="applyIndicators">Apply</button>
+          </div>
+          <div class="small">
+            Period applies except fixed MACD 12/26/9. Empty values mean warming
+            up. Uses loaded bars; delta uses actual classified trades.
+          </div>
+        </section>
+        <section id="discoveryPanel">
+          <h2>Discovered concentrations</h2>
+          <button id="discoveryToggle">Enable discovery</button
+          ><button id="optionsToggle">Enable Deribit OI</button
+          ><label
+            >Baseline multiple
+            <input
+              id="levelThreshold"
+              type="number"
+              min="2"
+              max="20"
+              value="3"
+              style="width: 60px"
+          /></label>
+          <div id="levels" class="small"></div>
+          <div id="optionsTable" class="small"></div>
+          <div class="small">
+            Resting size and option OI are separate metrics. OI groups compare
+            the same expiry and put/call side. No dealer-positioning inference.
+          </div>
+        </section>
+        <section>
+          <h2>Connection center</h2>
+          <div id="connections" class="small"></div>
+          <div class="small">
+            Broker trading: unavailable. Rithmic / CQG require provider API
+            access and conformance. IBKR requires TWS or Gateway. Market data
+            permissions are separate.
+          </div>
+        </section>
+        <section>
+          <h2>Paper order ticket</h2>
+          <span class="badge">SIMULATION · SIM-LOCAL</span>
+          <p class="small">
+            Local fill model; never routed to a broker. Whole units only.
+          </p>
+          <button id="enablePaper">Enable paper orders</button>
+          <div id="paperTicket" class="hidden">
+            <div class="row">
+              <select id="orderSide" aria-label="Paper order side">
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option></select
+              ><input
+                id="orderQty"
+                type="number"
+                min="1"
+                max="100"
+                value="1"
+                aria-label="Paper order quantity"
+              />
+            </div>
+            <div class="row">
+              <select id="orderKind" aria-label="Paper order type">
+                <option value="limit">Limit</option>
+                <option value="market">Market</option></select
+              ><input
+                id="orderPrice"
+                type="number"
+                step="any"
+                placeholder="Limit price"
+                aria-label="Paper limit price"
+              />
+            </div>
+            <button id="submitPaper">Submit simulated order</button>
+          </div>
+          <div id="orders" class="small"></div>
+        </section>
+        <section>
+          <h2>Session companion</h2>
+          <div id="facts" class="small">Waiting for evidence</div>
+          <button id="bookmark">Bookmark this moment</button>
+          <div id="bookmarks" class="small"></div>
+          <p class="small">
+            Factual summaries and armed price alerts run without AI. No
+            autonomous orders.
+          </p>
+        </section>
+        <section>
+          <h2>Depth ladder <span id="depthLabel"></span></h2>
+          <div class="depthhead">
+            <span>Bid size</span><span>Price</span><span>Ask size</span>
+          </div>
+          <div id="asks"></div>
+          <div id="spread">Waiting for book</div>
+          <div id="bids"></div>
+          <div class="small" id="bookNote"></div>
+        </section>
+        <section>
+          <h2>Time &amp; sales</h2>
+          <div class="depthhead">
+            <span>Time</span><span>Price</span><span>Size</span>
+          </div>
+          <div id="tape" class="small">No trades received</div>
+        </section>
+        <section>
+          <h2>Workspace watchlist</h2>
+          <div id="watch"></div>
+          <div class="row">
+            <input
+              id="watchName"
+              placeholder="Label"
+              aria-label="Watchlist label"
+            /><input
+              id="watchPort"
+              type="number"
+              min="1024"
+              max="65535"
+              placeholder="Port"
+              aria-label="Engine port"
+            /><button id="addWatch">Add</button>
+          </div>
+          <div class="small">
+            Link a running local engine by port. Open another window for another
+            symbol. Prices are never fabricated.
+          </div>
+        </section>
+        <section>
+          <h2>Price alerts</h2>
+          <div class="row">
+            <input
+              id="alertPrice"
+              type="number"
+              step="any"
+              placeholder="Crossing price"
+              aria-label="Alert price"
+            /><button id="addAlert">Add</button>
+          </div>
+          <div id="alerts"></div>
+          <div class="small">
+            In-window alerts while this page is connected. Replay alerts are
+            labeled.
+          </div>
+        </section>
+        <section>
+          <h2>Session notes</h2>
+          <textarea
+            id="notes"
+            aria-label="Session notes"
+            placeholder="Plan, observations, review…"
+            style="
+              width: 100%;
+              min-height: 90px;
+              background: var(--bg);
+              color: var(--text);
+              border: 1px solid var(--line);
+              padding: 8px;
+              resize: vertical;
+            "
+          ></textarea
+          ><button id="exportNotes">Export notes</button>
+          <div class="small">
+            Saved in this browser per instrument. Export for your journal.
+          </div>
+        </section>
+      </aside>
+    </div>
+    <div id="replay" class="replay hidden">
+      <span class="badge">REPLAY</span><button id="pause">Pause</button
+      ><button id="step">Step event</button
+      ><select id="speed" aria-label="Replay speed">
+        <option value="0.5">0.5×</option>
+        <option value="1">1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+        <option value="8">8×</option>
+        <option value="32">32×</option></select
+      ><input
+        id="seek"
+        type="range"
+        min="0"
+        max="1000"
+        value="0"
+        aria-label="Replay position"
+      /><span id="position">0%</span>
+    </div>
+    <footer>
+      <span id="notice">Scroll to zoom · drag to pan · double-click to fit</span
+      ><span>READ ONLY · Local workspace</span>
+    </footer>
+    <script>
+      "use strict";
+      /* PRICE_SCALE_START */
+      const PriceScale = (() => {
+        function units(tick) {
+          if (!Number.isFinite(tick) || tick <= 0)
+            throw Error("Invalid instrument tick");
+          const digits = String(tick).includes("e-")
+            ? Number(String(tick).split("e-")[1])
+            : Math.max(0, (String(tick).split(".")[1] || "").length);
+          const scale = 10 ** digits;
+          return { scale, step: Math.round(tick * scale) };
+        }
+        function snap(price, tick) {
+          const { scale, step } = units(tick);
+          return (Math.round((price * scale) / step) * step) / scale;
+        }
+        function axis(low, high, tick, target = 6) {
+          const { scale, step } = units(tick),
+            raw = Math.max(1, ((high - low) * scale) / step / target);
+          const magnitude = 10 ** Math.floor(Math.log10(raw));
+          const stride =
+            ([1, 2, 4, 5, 10].find((n) => n * magnitude >= raw) || 10) *
+            magnitude;
+          const first = Math.ceil((low * scale) / step / stride) * stride,
+            result = [];
+          for (
+            let value = first;
+            (value * step) / scale <= high && result.length < 100;
+            value += stride
+          )
+            result.push((value * step) / scale);
+          return result;
+        }
+        return { snap, axis };
+      })();
+      /* PRICE_SCALE_END */
+      const $ = (id) => document.getElementById(id),
+        canvas = $("chartCanvas"),
+        ctx = canvas.getContext("2d");
+      const color = {
+        bg: "#0c1426",
+        grid: "#26324d",
+        muted: "#a5b4d0",
+        text: "#edf2ff",
+        up: "#46d8b5",
+        down: "#ff7f94",
+        accent: "#f0b96a",
+      };
+      let S = null,
+        ws = null,
+        received = 0,
+        connected = false,
+        drawingStart = null,
+        drawings = [],
+        alerts = [],
+        symbolKey = "",
+        previousPrice = null;
+      let zoom = 1,
+        pan = 0,
+        geom = null,
+        mouse = null,
+        drag = null,
+        resize = false,
+        showVWAP = false,
+        showCVD = true;
+      function load(key, fallback) {
+        try {
+          return (
+            JSON.parse(localStorage.getItem("alpharch." + key)) ?? fallback
+          );
+        } catch {
+          return fallback;
+        }
+      }
+      function save(key, value) {
+        try {
+          localStorage.setItem("alpharch." + key, JSON.stringify(value));
+        } catch {
+          $("notice").textContent =
+            "Browser storage unavailable; export your notes before closing.";
+        }
+      }
+      function notice(text) {
+        $("notice").textContent = text;
+      }
+      function send(msg) {
+        if (ws?.readyState === 1) ws.send(JSON.stringify(msg));
+        else notice("Engine disconnected; control was not applied.");
+      }
+      const fmt = (p) =>
+        Number.isFinite(p)
+          ? p.toLocaleString("en-US", {
+              minimumFractionDigits: Math.min(
+                8,
+                Math.max(2, String(S?.tick || 0.01).split(".")[1]?.length || 0),
+              ),
+              maximumFractionDigits: Math.min(
+                8,
+                Math.max(2, String(S?.tick || 0.01).split(".")[1]?.length || 0),
+              ),
+            })
+          : "—";
+      const size = (q) =>
+        Number.isFinite(q)
+          ? q.toLocaleString("en-US", { maximumFractionDigits: 3 })
+          : "—";
+      const clock = (t) =>
+        new Date(t * 1000).toLocaleTimeString([], { hour12: false });
+      function key() {
+        return (S?.feed || "") + ":" + (S?.symbol || "");
+      }
+      function connect() {
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        ws.onopen = () => {
+          connected = true;
+        };
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.error) {
+              notice(data.error);
+              return;
+            }
+            if (!data.symbol) return;
+            S = data;
+            received = Date.now();
+            connected = true;
+            update();
+            draw();
+          } catch {
+            notice("Could not read engine update.");
+          }
+        };
+        ws.onclose = () => {
+          connected = false;
+          status();
+          setTimeout(connect, 2000);
+        };
+        ws.onerror = () => {
+          connected = false;
+          status();
+        };
+      }
+      function status() {
+        let text = !connected
+          ? "Engine disconnected · reconnecting"
+          : Date.now() - received > 5000
+            ? "Engine updates interrupted"
+            : S?.mode === "replay"
+              ? `REPLAY · ${S.status}${S.replay?.paused ? " · paused" : ""}`
+              : `${(S?.status || "waiting").toUpperCase()} · ${S?.age == null ? "no events yet" : Math.floor(S.age + (Date.now() - received) / 1000) + "s since event"}`;
+        $("status").textContent = text;
+      }
+      let accessible = load("accessible", false);
+      $("accessible").onclick = () => {
+        accessible = !accessible;
+        save("accessible", accessible);
+        if (S) {
+          update();
+          draw();
+        }
+      };
+      let restoredWorkspace = "";
+      function update() {
+        if (S.workspace && JSON.stringify(S.workspace) !== restoredWorkspace) {
+          restoredWorkspace = JSON.stringify(S.workspace);
+          const v = S.workspace;
+          if (v.symbol === S.symbol) {
+            drawings = v.drawings || [];
+            save("drawings." + key(), drawings);
+          }
+          if (["candles", "footprint", "heat", "profile"].includes(v.chart))
+            $("chart").value = v.chart;
+          if (Number.isFinite(v.rail))
+            document.documentElement.style.setProperty(
+              "--rail",
+              Math.max(220, Math.min(v.rail, innerWidth * 0.45)) + "px",
+            );
+          showVWAP = v.showVWAP === true;
+          showCVD = v.showCVD !== false;
+          for (const [name, settings] of Object.entries(v.technical || {})) {
+            if (["sma", "ema", "bollinger"].includes(name))
+              $("overlayIndicator").value = name;
+            else $("paneIndicator").value = name;
+            $("indicatorPeriod").value = settings.period;
+            $("indicatorSource").value = settings.source;
+          }
+        }
+        $("splash").classList.add("hidden");
+        if (
+          S.bars?.mode === "time" &&
+          document.activeElement !== $("timeframe")
+        )
+          $("timeframe").value = String(S.bars.seconds);
+        $("orderPrice").step = String(S.min_tick || S.tick);
+        renderDiscovery();
+        const theme = S.theme || {};
+        color.bg = theme.background || "#0c1426";
+        color.text = theme.foreground || "#edf2ff";
+        color.muted = theme.dark_foreground || "#a5b4d0";
+        color.accent = theme.accent || "#f0b96a";
+        color.grid = theme.lighter_background || "#26324d";
+        color.up = accessible ? "#57aaf0" : theme.green || "#46d8b5";
+        color.down = accessible ? "#f0a356" : theme.red || "#ff7f94";
+        for (const [k, v] of Object.entries({
+          bg: color.bg,
+          text: color.text,
+          muted: color.muted,
+          accent: color.accent,
+          up: color.up,
+          down: color.down,
+          panel: theme.dark_background || "#111d34",
+          line: theme.lighter_background || "#283653",
+        }))
+          document.documentElement.style.setProperty("--" + k, v);
+        $("accessible").classList.toggle("active", accessible);
+        if (symbolKey !== key()) {
+          symbolKey = key();
+          drawings = load("drawings." + key(), []);
+          alerts = load("alerts." + key(), []);
+          $("notes").value = load("notes." + key(), "");
+          previousPrice = null;
+          zoom = 1;
+          pan = 0;
+        }
+        $("specimen").textContent = /specimen|synthetic|fixture/i.test(S.feed)
+          ? "SPECIMEN DATA"
+          : "";
+        $("connections").textContent =
+          `${S.feed} · ${S.mode} · ${S.status}. ${S.age == null ? "No data yet." : Math.floor(S.age) + "s since event."} ${S.mode === "replay" ? "Local recording; no live entitlement claimed." : "Public market data; no broker account connected."}`;
+        $("facts").textContent =
+          `${clock(S.assistant?.source_time || 0)} · ${S.feed} · ${S.status}. Last ${fmt(S.last)}; session VWAP ${fmt(S.assistant?.session_vwap)}; cumulative delta ${size(S.cvd)}. These are observed values, not forecasts.`;
+        renderPaper();
+        renderBookmarks();
+        document.title = `Alpharch — ${S.symbol} · ${location.port}`;
+        $("symbol").textContent = S.symbol;
+        $("last").textContent = S.last ? fmt(S.last) : "—";
+        const change =
+          S.open && S.last
+            ? ((S.last - S.open) / Math.abs(S.open)) * 100
+            : null;
+        $("change").textContent =
+          change === null
+            ? ""
+            : `${change >= 0 ? "+" : ""}${change.toFixed(2)}% from session open`;
+        $("change").style.color = change >= 0 ? color.up : color.down;
+        $("source").textContent =
+          `${S.feed} · ${S.market || "market"} · grid ${fmt(S.tick)} · ${S.bars?.mode || "time"} bars · ${S.market === "futures" ? "contracts" : "base units"} · session = loaded events`;
+        $("high").textContent = S.open === null ? "—" : fmt(S.high);
+        $("low").textContent = fmt(S.low);
+        $("vwapValue").textContent = Number.isFinite(S.vwap?.at(-1)?.v)
+          ? "≈ " +
+            S.vwap.at(-1).v.toLocaleString("en-US", {
+              minimumFractionDigits: 4,
+              maximumFractionDigits: 4,
+            })
+          : "—";
+        $("deltaValue").textContent = size(S.cvd);
+        $("extra").textContent = S.funding
+          ? `Funding / ${S.funding.hours || "?"}h: ${(S.funding.rate * 100).toFixed(4)}% · OI ${size(S.oi)}`
+          : "";
+        $("depthLabel").textContent =
+          S.depth_levels === 0
+            ? "· unavailable"
+            : S.depth_levels
+              ? `· top ${S.depth_levels}`
+              : "";
+        const book = S.book || { bids: [], asks: [] },
+          max = Math.max(1, ...[...book.bids, ...book.asks].map((x) => x[1]));
+        function levels(id, items, side) {
+          $(id).replaceChildren(
+            ...items.map(([p, q]) => {
+              const row = document.createElement("div");
+              row.className = "depthrow";
+              row.style.setProperty("--size", (q / max) * 100 + "%");
+              for (const text of [
+                side === "buy" ? size(q) : "",
+                fmt(p),
+                side === "sell" ? size(q) : "",
+              ]) {
+                const span = document.createElement("span");
+                span.textContent = text;
+                row.append(span);
+              }
+              return row;
+            }),
+          );
+        }
+        levels("asks", book.asks.slice(0, 6).reverse(), "sell");
+        levels("bids", book.bids.slice(0, 6), "buy");
+        $("spread").textContent =
+          book.bids.length && book.asks.length
+            ? `Spread ${fmt(book.asks[0][0] - book.bids[0][0])}`
+            : "No depth available";
+        $("bookNote").textContent =
+          book.note ||
+          (S.depth_levels === 0
+            ? "Trades-only recording; no resting liquidity data."
+            : "Displayed depth is limited to the source snapshot.");
+        $("tape").replaceChildren(
+          ...(S.tape || [])
+            .slice(-6)
+            .reverse()
+            .map((t) => {
+              const row = document.createElement("div");
+              row.className = "taperow " + (t.a === "buy" ? "buy" : "sell");
+              for (const text of [clock(t.t), fmt(t.p), size(t.s)]) {
+                const span = document.createElement("span");
+                span.textContent = text;
+                row.append(span);
+              }
+              return row;
+            }),
+        );
+        $("replay").classList.toggle("hidden", S.mode !== "replay");
+        if (S.replay) {
+          $("speed").value = String(S.replay.speed);
+          $("pause").textContent = S.replay.paused ? "Play" : "Pause";
+          $("seek").value = S.replay.progress * 1000;
+          $("position").textContent = Math.round(S.replay.progress * 100) + "%";
+        }
+        if (previousPrice !== null && S.last && S.status !== "stale") {
+          for (const a of alerts) {
+            if (
+              !a.hit &&
+              ((previousPrice < a.price && S.last >= a.price) ||
+                (previousPrice > a.price && S.last <= a.price))
+            ) {
+              a.hit = true;
+              notice(
+                `${S.mode === "replay" ? "REPLAY " : ""}${S.symbol} crossed ${fmt(a.price)}`,
+              );
+            }
+          }
+          save("alerts." + key(), alerts);
+        }
+        previousPrice = S.last || previousPrice;
+        renderAlerts();
+        status();
+      }
+      function fit() {
+        const rect = $("plot").getBoundingClientRect(),
+          d = devicePixelRatio || 1;
+        canvas.width = rect.width * d;
+        canvas.height = rect.height * d;
+        ctx.setTransform(d, 0, 0, d, 0, 0);
+        draw();
+      }
+      new ResizeObserver(fit).observe($("plot"));
+      function draw() {
+        const W = canvas.clientWidth,
+          H = canvas.clientHeight;
+        ctx.fillStyle = color.bg;
+        ctx.fillRect(0, 0, W, H);
+        const bars = S?.buckets || [];
+        $("empty").classList.toggle("hidden", bars.length > 0);
+        if (!bars.length) {
+          geom = null;
+          return;
+        }
+        const count = Math.max(3, Math.ceil(bars.length / zoom)),
+          end = Math.max(count, bars.length - pan),
+          start = Math.max(0, end - count),
+          visible = bars.slice(start, end);
+        if (!visible.length) return;
+        const left = 14,
+          right = W - 90,
+          top = 18,
+          bottom =
+            H - (showCVD ? 100 : 32) - ($("paneIndicator").value ? 80 : 0),
+          width = right - left,
+          height = bottom - top;
+        if (width < 20 || height < 20) return;
+        let low = Math.min(...visible.map((b) => b.l)),
+          high = Math.max(...visible.map((b) => b.h));
+        const pad = Math.max((high - low) * 0.12, S.tick * 4);
+        low -= pad;
+        high += pad;
+        const t0 = visible[0].t,
+          t1 = visible.at(-1).t + Math.max(1, S.bars?.seconds || 60),
+          y = (p) => top + ((high - p) / (high - low)) * height,
+          x = (t) => left + ((t - t0) / (t1 - t0)) * width;
+        geom = { left, right, top, bottom, low, high, t0, t1, x, y };
+        ctx.font = "11px ui-monospace,monospace";
+        ctx.lineWidth = 1;
+        for (const p of PriceScale.axis(low, high, S.min_tick || S.tick)) {
+          const py = y(p);
+          ctx.strokeStyle = color.grid;
+          ctx.beginPath();
+          ctx.moveTo(left, py);
+          ctx.lineTo(right, py);
+          ctx.stroke();
+          ctx.fillStyle = color.muted;
+          ctx.fillText(fmt(p), right + 10, py + 4);
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
+        const type = $("chart").value;
+        if (type === "heat") {
+          for (const h of S.heat || []) {
+            if (h.t < t0 || h.t > t1) continue;
+            const max = Math.max(1, ...Object.values(h.cols));
+            for (const [p, q] of Object.entries(h.cols)) {
+              const intensity = Math.pow(q / max, 0.5);
+              ctx.fillStyle =
+                intensity > 0.75
+                  ? `rgba(255,195,103,${intensity * 0.9})`
+                  : intensity > 0.4
+                    ? `rgba(175,119,244,${intensity * 0.65})`
+                    : `rgba(94,132,232,${intensity * 0.7})`;
+              ctx.fillRect(
+                x(h.t),
+                y(+p + S.tick / 2),
+                Math.max(2, width / (S.heat.length || 1)),
+                Math.max(1, (S.tick / (high - low)) * height),
+              );
+            }
+          }
+        }
+        if (type === "profile") {
+          const rows = S.profile || [],
+            max = Math.max(1, ...rows.map((r) => r[1] + r[2]));
+          for (const [p, b, a] of rows) {
+            ctx.fillStyle = color.up + "66";
+            const w = ((b + a) / max) * width * 0.7;
+            ctx.fillRect(
+              right - w,
+              y(p + S.tick / 2),
+              (w * b) / (b + a || 1),
+              Math.max(2, (S.tick / (high - low)) * height),
+            );
+            ctx.fillStyle = color.down + "66";
+            ctx.fillRect(
+              right - w + (w * b) / (b + a || 1),
+              y(p + S.tick / 2),
+              (w * a) / (b + a || 1),
+              Math.max(2, (S.tick / (high - low)) * height),
+            );
+          }
+        }
+        const bw = Math.max(2, (width / visible.length) * 0.62);
+        for (const b of visible) {
+          const px = x(b.t) + width / visible.length / 2;
+          ctx.strokeStyle = b.c >= b.o ? color.up : color.down;
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.beginPath();
+          ctx.moveTo(px, y(b.h));
+          ctx.lineTo(px, y(b.l));
+          ctx.stroke();
+          ctx.fillRect(
+            px - bw / 2,
+            Math.min(y(b.o), y(b.c)),
+            bw,
+            Math.max(1, Math.abs(y(b.o) - y(b.c))),
+          );
+          if (type === "footprint" && bw > 40) {
+            ctx.font = "10px ui-monospace,monospace";
+            for (const [p, bid, ask] of b.footprint || []) {
+              const py = y(p);
+              if (py < top || py > bottom) continue;
+              ctx.fillStyle = color.text;
+              ctx.fillText(`${size(bid)} × ${size(ask)}`, px - bw / 2, py);
+            }
+          }
+        }
+        if (type === "footprint" && bw <= 40) {
+          ctx.fillStyle = color.accent;
+          ctx.fillText(
+            "Zoom in to read footprint quantities",
+            left + 8,
+            top + 16,
+          );
+        }
+        if (type === "heat" && !(S.heat || []).length) {
+          ctx.fillStyle = color.accent;
+          ctx.fillText(
+            "No order book history in this source",
+            left + 8,
+            top + 16,
+          );
+        }
+        for (const name of [$("overlayIndicator").value]) {
+          const indicator = S.technical?.[name];
+          if (indicator)
+            for (const values of Object.values(indicator.series)) {
+              const points = indicator.times
+                .map((t, i) => ({ t, v: values[i] }))
+                .filter((p) => p.v !== null && p.t >= t0 && p.t <= t1);
+              line(
+                points,
+                (p) => x(p.t),
+                (p) => y(p.v),
+                color.accent,
+              );
+            }
+        }
+        if (showVWAP) {
+          line(
+            (S.vwap || []).filter((v) => v.t >= t0 && v.t <= t1),
+            (v) => x(v.t),
+            (v) => y(v.v),
+            color.accent,
+          );
+        }
+        ctx.restore();
+        const pane = S.technical?.[$("paneIndicator").value];
+        if (pane) {
+          const values = Object.values(pane.series)
+            .flat()
+            .filter(Number.isFinite);
+          const bounded = ["rsi", "stochastic"].includes(
+            $("paneIndicator").value,
+          );
+          const min = bounded ? 0 : Math.min(0, ...values),
+            max = bounded ? 100 : Math.max(1, ...values),
+            py = H - (showCVD ? 100 : 20);
+          ctx.fillStyle = "#121c35";
+          ctx.fillRect(left, py - 66, width, 64);
+          ctx.strokeStyle = "#314267";
+          ctx.beginPath();
+          ctx.moveTo(left, py - 66);
+          ctx.lineTo(right, py - 66);
+          ctx.stroke();
+          ctx.fillStyle = "#bda6ff";
+          ctx.fillText(
+            $("paneIndicator").value.toUpperCase() +
+              " " +
+              pane.settings.period +
+              "   ·   " +
+              (values.length
+                ? Number(pane.series.value.at(-1)).toFixed(2)
+                : "warming up"),
+            left,
+            py - 49,
+          );
+          ctx.font = "10px ui-monospace,monospace";
+          for (const value of [min, (max + min) / 2, max]) {
+            const yy = py - 6 - ((value - min) / (max - min)) * 35;
+            ctx.fillStyle = "#97a7ce";
+            ctx.fillText(value.toFixed(0), right + 10, yy + 3);
+          }
+          for (const [name, series] of Object.entries(pane.series)) {
+            const points = pane.times
+              .map((t, i) => ({ t, v: series[i] }))
+              .filter((p) => p.v !== null && p.t >= t0 && p.t <= t1);
+            line(
+              points,
+              (p) => x(p.t),
+              (p) => py - 6 - ((p.v - min) / (max - min)) * 35,
+              name === "value" ? "#b9a0ff" : color.muted,
+            );
+          }
+        }
+        if (S.last >= low && S.last <= high) {
+          const lastY = y(S.last);
+          ctx.strokeStyle = color.accent;
+          ctx.setLineDash([2, 5]);
+          ctx.beginPath();
+          ctx.moveTo(left, lastY);
+          ctx.lineTo(right, lastY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = color.accent;
+          ctx.fillRect(right + 2, lastY - 10, 86, 20);
+          ctx.fillStyle = color.bg;
+          ctx.font = "600 11px ui-monospace,monospace";
+          ctx.fillText(fmt(S.last), right + 8, lastY + 4);
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
+        ctx.strokeStyle = color.accent;
+        ctx.fillStyle = color.accent;
+        for (const d of drawings) {
+          if (d.type === "horizontal") {
+            ctx.beginPath();
+            ctx.moveTo(left, y(d.p));
+            ctx.lineTo(right, y(d.p));
+            ctx.stroke();
+          } else if (d.type === "trend") {
+            ctx.beginPath();
+            ctx.moveTo(x(d.t), y(d.p));
+            ctx.lineTo(x(d.t2), y(d.p2));
+            ctx.stroke();
+          } else {
+            ctx.fillText(d.text, x(d.t), y(d.p));
+          }
+        }
+        ctx.restore();
+        if (showCVD) {
+          const points = (S.cvds || []).filter((v) => v.t >= t0 && v.t <= t1),
+            min = Math.min(0, ...points.map((v) => v.v)),
+            max = Math.max(1, ...points.map((v) => v.v));
+          ctx.fillStyle = "#111c30";
+          ctx.fillRect(left, H - 92, width, 84);
+          ctx.strokeStyle = "#314267";
+          ctx.beginPath();
+          ctx.moveTo(left, H - 92);
+          ctx.lineTo(right, H - 92);
+          ctx.stroke();
+          ctx.fillStyle = "#f0b96a";
+          ctx.fillText("CUMULATIVE DELTA   ·   " + size(S.cvd), left, H - 74);
+          ctx.fillStyle = color.muted;
+          ctx.font = "10px ui-monospace,monospace";
+          ctx.fillText(size(max), right + 10, H - 61);
+          ctx.fillText(size(min), right + 10, H - 16);
+          line(
+            points,
+            (v) => x(v.t),
+            (v) => H - 20 - ((v.v - min) / (max - min)) * 45,
+            color.accent,
+          );
+        }
+        ctx.fillStyle = color.muted;
+        for (let i = 0; i < 4; i++) {
+          const t = t0 + ((t1 - t0) * i) / 4;
+          ctx.fillText(clock(t), x(t), bottom + 15);
+        }
+        if (
+          mouse &&
+          mouse.x >= left &&
+          mouse.x <= right &&
+          mouse.y >= top &&
+          mouse.y <= bottom
+        ) {
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = "#95a7be88";
+          ctx.beginPath();
+          ctx.moveTo(mouse.x, top);
+          ctx.lineTo(mouse.x, bottom);
+          ctx.moveTo(left, mouse.y);
+          ctx.lineTo(right, mouse.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = color.accent;
+          ctx.fillText(
+            fmt(
+              PriceScale.snap(
+                high - ((mouse.y - top) / height) * (high - low),
+                S.min_tick || S.tick,
+              ),
+            ),
+            right + 7,
+            mouse.y - 5,
+          );
+        }
+      }
+      function line(points, X, Y, c) {
+        ctx.strokeStyle = c;
+        ctx.beginPath();
+        points.forEach((p, i) =>
+          i ? ctx.lineTo(X(p), Y(p)) : ctx.moveTo(X(p), Y(p)),
+        );
+        ctx.stroke();
+      }
+      function download(name, value, type = "application/json") {
+        const blob = new Blob(
+            [
+              typeof value === "string"
+                ? value
+                : JSON.stringify(value, null, 2),
+            ],
+            { type },
+          ),
+          url = URL.createObjectURL(blob),
+          a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      function portableLayout() {
+        return {
+          schema: "alpharch.layout/1",
+          rail: parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue(
+              "--rail",
+            ),
+          ),
+          compact: document.body.classList.contains("compact"),
+          chart: $("chart").value,
+          showVWAP,
+          showCVD,
+          accessible,
+        };
+      }
+      $("exportLayout").onclick = () =>
+        download("alpharch-layout.json", portableLayout());
+      $("importLayout").onchange = async () => {
+        try {
+          const file = $("importLayout").files[0];
+          if (!file || file.size > 16384)
+            throw Error("Use a layout file smaller than 16 KB");
+          const value = JSON.parse(await file.text());
+          if (
+            value.schema !== "alpharch.layout/1" ||
+            !["candles", "footprint", "heat", "profile"].includes(
+              value.chart,
+            ) ||
+            !Number.isInteger(value.rail) ||
+            value.rail < 220 ||
+            value.rail > 600
+          )
+            throw Error("Unsupported layout");
+          document.documentElement.style.setProperty(
+            "--rail",
+            value.rail + "px",
+          );
+          document.body.classList.toggle("compact", value.compact === true);
+          $("chart").value = value.chart;
+          showVWAP = value.showVWAP === true;
+          showCVD = value.showCVD !== false;
+          accessible = value.accessible === true;
+          draw();
+          notice(
+            "Layout imported. No account information or credentials are included.",
+          );
+        } catch (e) {
+          notice(e.message);
+        }
+      };
+      function renderPaper() {
+        const paper = S?.paper;
+        if (!paper) return;
+        $("enablePaper").textContent = paper.enabled
+          ? "Disable paper orders"
+          : "Enable paper orders";
+        $("paperTicket").classList.toggle("hidden", !paper.enabled);
+        $("orders").replaceChildren(
+          ...paper.orders.slice(0, 8).map((o) => {
+            const div = document.createElement("div");
+            div.textContent = `SIM ${o.side} ${o.quantity} ${o.kind} · ${o.status} (${o.filled} filled)`;
+            if (["working", "partial"].includes(o.status)) {
+              const button = document.createElement("button");
+              button.textContent = "Cancel";
+              button.onclick = () => send({ paper: { cancel: o.id } });
+              div.append(button);
+            }
+            return div;
+          }),
+        );
+      }
+      $("enablePaper").onclick = () =>
+        send({ paper: { enable: !S?.paper?.enabled } });
+      $("submitPaper").onclick = () => {
+        if (!S?.paper?.enabled) return;
+        send({
+          paper: {
+            submit: {
+              id: crypto.randomUUID(),
+              environment: "SIMULATION",
+              account: "SIM-LOCAL",
+              symbol: S.symbol,
+              side: $("orderSide").value,
+              kind: $("orderKind").value,
+              quantity: Number($("orderQty").value),
+              price: Number($("orderPrice").value),
+            },
+          },
+        });
+        notice(
+          "Simulated order submitted. Check its status in the paper journal.",
+        );
+      };
+      function renderBookmarks() {
+        $("bookmarks").replaceChildren(
+          ...load("bookmarks." + key(), [])
+            .slice(-5)
+            .map((b) => {
+              const div = document.createElement("div");
+              div.textContent = `${clock(b.time)} · ${fmt(b.price)} · ${b.note}`;
+              if (S.mode === "replay") {
+                const button = document.createElement("button");
+                button.textContent = "Replay here";
+                button.onclick = () =>
+                  send({ replay: { seek: b.progress, paused: true } });
+                div.append(button);
+              }
+              return div;
+            }),
+        );
+      }
+      $("bookmark").onclick = () => {
+        if (!S) return;
+        const values = load("bookmarks." + key(), []);
+        values.push({
+          time: S.assistant?.source_time,
+          price: S.last,
+          progress: S.replay?.progress || 0,
+          note: $("annotation").value || "Review moment",
+          source: S.feed,
+        });
+        save("bookmarks." + key(), values);
+        renderBookmarks();
+        notice("Moment bookmarked with source time and replay position.");
+      };
+      function reset() {
+        zoom = 1;
+        pan = 0;
+        draw();
+      }
+      $("follow").onclick = reset;
+      $("chart").onchange = draw;
+      $("mode").onchange = () => {
+        $("timeframe").classList.toggle("hidden", $("mode").value !== "time");
+        $("barvalue").classList.toggle("hidden", $("mode").value === "time");
+      };
+      $("apply").onclick = () => {
+        const mode = $("mode").value,
+          value = Number(
+            mode === "time" ? $("timeframe").value : $("barvalue").value,
+          );
+        if (!Number.isFinite(value) || value <= 0) {
+          notice("Use a positive bar size.");
+          return;
+        }
+        send({
+          bars: mode === "range" ? { mode, range: value } : { mode, value },
+        });
+        reset();
+        notice(
+          "Chart rebuilt from up to 100,000 retained trades. Volume bars keep whole trades; thresholds may be exceeded.",
+        );
+      };
+      $("vwap").onclick = () => {
+        showVWAP = !showVWAP;
+        $("vwap").classList.toggle("active", showVWAP);
+        draw();
+      };
+      $("cvd").onclick = () => {
+        showCVD = !showCVD;
+        $("cvd").classList.toggle("active", showCVD);
+        draw();
+      };
+      $("pause").onclick = () =>
+        send({ replay: { paused: !S?.replay?.paused } });
+      $("step").onclick = () => send({ replay: { step: true } });
+      $("speed").onchange = () =>
+        send({ replay: { speed: Number($("speed").value) } });
+      $("seek").onchange = () => {
+        send({ replay: { seek: Number($("seek").value) / 1000 } });
+        reset();
+        previousPrice = null;
+      };
+      $("layout").onclick = () => {
+        document.body.classList.toggle("compact");
+        $("layout").textContent = document.body.classList.contains("compact")
+          ? "Show panels"
+          : "Focus chart";
+      };
+      $("save").onclick = () => {
+        save("layout", {
+          rail: getComputedStyle(document.documentElement).getPropertyValue(
+            "--rail",
+          ),
+          compact: document.body.classList.contains("compact"),
+          chart: $("chart").value,
+          showVWAP,
+          showCVD,
+        });
+        notice("Layout saved in this browser.");
+      };
+      const layout = load("layout", {});
+      if (layout.rail)
+        document.documentElement.style.setProperty("--rail", layout.rail);
+      if (layout.compact) $("layout").click();
+      if (layout.chart) $("chart").value = layout.chart;
+      if (layout.showVWAP) $("vwap").click();
+      if (layout.showCVD === false) $("cvd").click();
+      $("split").onpointerdown = (e) => {
+        resize = true;
+        $("split").setPointerCapture(e.pointerId);
+      };
+      $("split").onpointermove = (e) => {
+        if (resize)
+          document.documentElement.style.setProperty(
+            "--rail",
+            Math.max(220, Math.min(600, innerWidth - e.clientX)) + "px",
+          );
+      };
+      $("split").onpointerup = () => (resize = false);
+      $("split").onkeydown = (e) => {
+        if (["ArrowLeft", "ArrowRight"].includes(e.key)) {
+          e.preventDefault();
+          const value = parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue(
+              "--rail",
+            ),
+          );
+          document.documentElement.style.setProperty(
+            "--rail",
+            Math.max(
+              220,
+              Math.min(600, value + (e.key === "ArrowLeft" ? 20 : -20)),
+            ) + "px",
+          );
+        }
+      };
+      function coords(e) {
+        const r = canvas.getBoundingClientRect();
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+      }
+      canvas.onpointermove = (e) => {
+        mouse = coords(e);
+        if (drag) {
+          pan = Math.max(
+            0,
+            Math.min(
+              (S?.buckets?.length || 1) - 3,
+              drag.pan + Math.round((drag.x - mouse.x) / 15),
+            ),
+          );
+        }
+        draw();
+      };
+      canvas.onpointerleave = () => {
+        mouse = null;
+        draw();
+      };
+      canvas.onpointerdown = (e) => {
+        if (!geom) return;
+        const m = coords(e),
+          g = geom;
+        if (m.x < g.left || m.x > g.right || m.y < g.top || m.y > g.bottom)
+          return;
+        const point = {
+            t: g.t0 + ((m.x - g.left) / (g.right - g.left)) * (g.t1 - g.t0),
+            p: PriceScale.snap(
+              g.high - ((m.y - g.top) / (g.bottom - g.top)) * (g.high - g.low),
+              S.min_tick || S.tick,
+            ),
+          },
+          tool = $("drawing").value;
+        if (tool === "cursor") {
+          drag = { x: m.x, pan };
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+        if (tool === "trend") {
+          if (!drawingStart) {
+            drawingStart = point;
+            notice("Click the second endpoint.");
+            return;
+          }
+          drawings.push({
+            type: "trend",
+            ...drawingStart,
+            t2: point.t,
+            p2: point.p,
+          });
+          drawingStart = null;
+        } else if (tool === "note") {
+          if (!$("annotation").value.trim()) {
+            notice("Enter annotation text first.");
+            return;
+          }
+          drawings.push({
+            type: "note",
+            ...point,
+            text: $("annotation").value,
+          });
+        } else drawings.push({ type: "horizontal", ...point });
+        save("drawings." + key(), drawings);
+        draw();
+      };
+      canvas.onpointerup = () => (drag = null);
+      canvas.ondblclick = reset;
+      canvas.onwheel = (e) => {
+        e.preventDefault();
+        zoom = Math.max(1, Math.min(24, zoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+        draw();
+      };
+      $("drawing").onchange = () => (drawingStart = null);
+      $("undo").onclick = () => {
+        drawings.pop();
+        save("drawings." + key(), drawings);
+        draw();
+      };
+      let watch = load("watch", []);
+      function renderWatch() {
+        $("watch").replaceChildren(
+          ...watch.map((item) => {
+            const a = document.createElement("a");
+            a.textContent = item.name + " ↗";
+            a.href = `http://127.0.0.1:${item.port}`;
+            a.target = "_blank";
+            a.rel = "noopener";
+            return a;
+          }),
+        );
+      }
+      renderWatch();
+      $("addWatch").onclick = () => {
+        const port = Number($("watchPort").value),
+          name = $("watchName").value.trim();
+        if (!name || !Number.isInteger(port) || port < 1024 || port > 65535)
+          return;
+        watch.push({ name, port });
+        save("watch", watch);
+        renderWatch();
+      };
+      function renderAlerts() {
+        $("alerts").replaceChildren(
+          ...alerts.map((a, i) => {
+            const row = document.createElement("div"),
+              button = document.createElement("button");
+            row.textContent = `${fmt(a.price)} · ${a.hit ? "triggered" : "armed"} `;
+            button.textContent = "Remove";
+            button.onclick = () => {
+              alerts.splice(i, 1);
+              save("alerts." + key(), alerts);
+              renderAlerts();
+            };
+            row.append(button);
+            return row;
+          }),
+        );
+      }
+      $("addAlert").onclick = () => {
+        if (!S || !$("alertPrice").value) return;
+        const price = Number($("alertPrice").value);
+        if (!Number.isFinite(price)) return;
+        alerts.push({ price, hit: false });
+        save("alerts." + key(), alerts);
+        renderAlerts();
+      };
+      $("notes").oninput = () => {
+        if (S) save("notes." + key(), $("notes").value);
+      };
+      $("exportNotes").onclick = () => {
+        const review = {
+          schema: "alpharch.review/1",
+          symbol: S?.symbol,
+          source: S?.feed,
+          mode: S?.mode,
+          notes: $("notes").value,
+          bookmarks: load("bookmarks." + key(), []),
+          drawings,
+          paper: S?.paper,
+        };
+        download("alpharch-session-review.json", review);
+      };
+      let discovery = false,
+        optionsEnabled = false;
+      function applyTechnical() {
+        const technical = {};
+        for (const name of [
+          $("overlayIndicator").value,
+          $("paneIndicator").value,
+        ])
+          if (name)
+            technical[name] = {
+              period: Number($("indicatorPeriod").value),
+              source: $("indicatorSource").value,
+            };
+        send({ technical });
+        save("technical", technical);
+      }
+      $("applyIndicators").onclick = applyTechnical;
+      $("discoveryToggle").onclick = () => {
+        discovery = !discovery;
+        send({ discovery });
+        $("discoveryToggle").textContent = discovery
+          ? "Disable discovery"
+          : "Enable discovery";
+      };
+      $("optionsToggle").onclick = () => {
+        optionsEnabled = !optionsEnabled;
+        send({ options_enabled: optionsEnabled });
+        $("optionsToggle").textContent = optionsEnabled
+          ? "Disable Deribit OI"
+          : "Enable Deribit OI";
+      };
+      $("levelThreshold").onchange = () =>
+        send({ level_threshold: Number($("levelThreshold").value) });
+      function renderDiscovery() {
+        if (!S) return;
+        $("levels").replaceChildren(
+          ...(S.levels || []).slice(0, 12).map((l) => {
+            const div = document.createElement("div");
+            div.textContent = `${l.instrument} ${l.expiry || ""} ${l.side || ""} ${fmt(l.price)} · ${l.metric}: ${size(l.value)} (${l.ratio.toFixed(1)}× median ${size(l.baseline)}) · ${l.source} · ${clock(l.timestamp)}`;
+            return div;
+          }),
+        );
+        $("optionsTable").textContent =
+          S.options?.error ||
+          (S.options?.enabled
+            ? `Deribit OI snapshot ${S.options.timestamp ? clock(S.options.timestamp) : "pending"} · ${(S.options.rows || []).length} contracts`
+            : "Optional options polling is off.");
+      }
+      const railTabs = document.createElement("nav");
+      railTabs.className = "rail-tabs";
+      railTabs.setAttribute("aria-label", "Workspace panels");
+      document.querySelector("aside").prepend(railTabs);
+      const panelNames = {
+        technicalPanel: "Indicators",
+        discoveryPanel: "Level discovery",
+      };
+      document.querySelectorAll("aside > section").forEach((section, i) => {
+        if (!section.id) section.id = "panel" + i;
+        if (section.id === "settingsPanel") return;
+        panelNames[section.id] ??=
+          section.querySelector("h2")?.textContent || section.id;
+      });
+      let panels = load("panels", {});
+      function applyPanels() {
+        for (const id of Object.keys(panelNames))
+          $(id).classList.toggle("hidden", panels[id] === false);
+      }
+      for (const [id, name] of Object.entries(panelNames)) {
+        const label = document.createElement("label"),
+          input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = panels[id] !== false;
+        input.onchange = () => {
+          panels[id] = input.checked;
+          save("panels", panels);
+          applyPanels();
+          if (!input.checked && id === "discoveryPanel") {
+            discovery = false;
+            optionsEnabled = false;
+            send({ discovery: false, options_enabled: false });
+          }
+          if (!input.checked && id === "technicalPanel") {
+            send({ technical: {} });
+          }
+        };
+        label.append(input, document.createTextNode(name));
+        label.style.display = "block";
+        $("panelToggles").append(label);
+      }
+      applyPanels();
+      function presets() {
+        return load("presets", {});
+      }
+      function renderPresets() {
+        const names = Object.keys(presets());
+        $("presetName").replaceChildren(
+          ...names.map((name) => {
+            const o = document.createElement("option");
+            o.textContent = name;
+            o.value = name;
+            return o;
+          }),
+        );
+      }
+      renderPresets();
+      $("storePreset").onclick = () => {
+        const name = $("newPreset").value.trim() || $("presetName").value;
+        if (!name) return;
+        const values = presets();
+        values[name] = {
+          ...portableLayout(),
+          panels,
+          drawings,
+          bars: S?.bars,
+          symbol: S?.symbol,
+          source: S?.feed,
+          replay: S?.replay,
+          technical: load("technical", {}),
+          watch,
+        };
+        save("presets", values);
+        send({ workspace: values[name] });
+        renderPresets();
+        notice(
+          "Named preset saved. Paper trading will remain disabled on restore.",
+        );
+      };
+      $("loadPreset").onclick = () => {
+        const v = presets()[$("presetName").value];
+        if (!v) return;
+        document.documentElement.style.setProperty(
+          "--rail",
+          Math.max(220, Math.min(v.rail, innerWidth * 0.45)) + "px",
+        );
+        document.body.classList.toggle("compact", v.compact);
+        $("chart").value = v.chart;
+        showVWAP = v.showVWAP;
+        showCVD = v.showCVD;
+        panels = v.panels || {};
+        applyPanels();
+        send({ paper: { enable: false }, technical: v.technical || {} });
+        if (S?.symbol === v.symbol && S?.feed === v.source) {
+          drawings = v.drawings || [];
+          save("drawings." + key(), drawings);
+          if (v.bars)
+            send({
+              bars:
+                v.bars.mode === "range"
+                  ? { mode: "range", range: v.bars.range }
+                  : {
+                      mode: v.bars.mode,
+                      value:
+                        v.bars.mode === "time" ? v.bars.seconds : v.bars.count,
+                    },
+            });
+          if (v.replay)
+            send({ replay: { seek: v.replay.progress, paused: true } });
+        } else
+          notice(
+            "Preset panels loaded. Start the saved instrument source to restore its drawings/replay.",
+          );
+        draw();
+      };
+      $("deletePreset").onclick = () => {
+        const values = presets();
+        delete values[$("presetName").value];
+        save("presets", values);
+        renderPresets();
+      };
+      $("resetPreferences").onclick = () => {
+        panels = {};
+        save("panels", panels);
+        applyPanels();
+        showVWAP = false;
+        showCVD = true;
+        document.body.classList.remove("compact");
+        document.documentElement.style.setProperty("--rail", "310px");
+        reset();
+      };
+      const groups = {
+        Market: ["panel6", "panel7"],
+        Analyze: ["technicalPanel", "discoveryPanel", "panel5"],
+        Review: ["panel4", "panel9", "panel10"],
+        Setup: ["settingsPanel", "panel3", "panel8"],
+      };
+      function setTab(name) {
+        for (const section of document.querySelectorAll("aside > section"))
+          section.classList.toggle(
+            "tab-hidden",
+            !groups[name].includes(section.id),
+          );
+        for (const button of railTabs.children)
+          button.classList.toggle("active", button.textContent === name);
+      }
+      for (const name of Object.keys(groups)) {
+        const button = document.createElement("button");
+        button.textContent = name;
+        button.onclick = () => setTab(name);
+        railTabs.append(button);
+      }
+      setTab("Market");
+      const startupLabel = document.createElement("label"),
+        startupInput = document.createElement("input");
+      startupInput.type = "checkbox";
+      startupInput.checked = load("startup", true);
+      startupInput.onchange = () => save("startup", startupInput.checked);
+      startupLabel.append(
+        startupInput,
+        document.createTextNode("Launch animation"),
+      );
+      $("panelToggles").append(startupLabel);
+      $("skipSplash").onclick = () => $("splash").classList.add("hidden");
+      try {
+        const last = Number(localStorage.getItem("alpharch.launchTime") || 0);
+        if (load("startup", true) && Date.now() - last > 30000) {
+          $("splash").classList.remove("hidden");
+          localStorage.setItem("alpharch.launchTime", String(Date.now()));
+          setTimeout(() => $("splash").classList.add("hidden"), 1500);
+        }
+      } catch {}
+      // Trading surface: tools at the chart, configuration in the desk sheet.
+      const edition = document.createElement("span");
+      edition.className = "edition";
+      edition.textContent = "YOUR DESK / THE PIT";
+      document.querySelector("header .brand").after(edition);
+      const deskButton = document.createElement("button");
+      deskButton.className = "header-action";
+      deskButton.textContent = "Desk settings ↗";
+      document.querySelector("header").append(deskButton);
+      const sheet = document.createElement("dialog");
+      sheet.id = "deskSheet";
+      sheet.innerHTML =
+        '<div class="dialog-heading"><h1>Your desk.</h1><button id="closeDeskSheet" aria-label="Close desk settings">Close ×</button></div><p class="small">Arrange once. Save the way you read the market.</p>';
+      document.body.append(sheet);
+      sheet.append(document.querySelector(".tools"));
+      sheet.append($("settingsPanel"));
+      $("settingsPanel").classList.remove("tab-hidden");
+      deskButton.onclick = () => sheet.showModal();
+      $("closeDeskSheet").onclick = () => sheet.close();
+      const chartbar = document.createElement("div");
+      chartbar.className = "chartbar";
+      chartbar.innerHTML = '<span class="chart-caption">PRICE / VOLUME</span>';
+      for (const id of ["chart", "timeframe", "follow"]) chartbar.append($(id));
+      $("vwap").classList.add("hidden");
+      $("cvd").classList.add("hidden");
+      $("plot").before(chartbar);
+      $("timeframe").onchange = () => {
+        send({ bars: { mode: "time", value: Number($("timeframe").value) } });
+        reset();
+      };
+      const detailButton = document.createElement("button");
+      detailButton.textContent = "Chart settings ↗";
+      detailButton.onclick = () => sheet.showModal();
+      chartbar.append(detailButton);
+      const dock = document.createElement("nav");
+      dock.className = "drawing-dock";
+      dock.setAttribute("aria-label", "Drawing tools");
+      for (const [tool, glyph, label] of [
+        ["cursor", "⌖", "Crosshair and pan"],
+        ["horizontal", "—", "Horizontal level"],
+        ["trend", "╱", "Trend line"],
+        ["note", "T", "Text annotation"],
+      ]) {
+        const button = document.createElement("button");
+        button.textContent = glyph;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        button.onclick = () => {
+          $("drawing").value = tool;
+          drawingStart = null;
+          for (const b of dock.children) b.classList.remove("active");
+          button.classList.add("active");
+          if (tool === "note") sheet.showModal();
+        };
+        dock.append(button);
+      }
+      const undo = document.createElement("button");
+      undo.textContent = "↶";
+      undo.title = "Undo drawing";
+      undo.setAttribute("aria-label", "Undo last drawing");
+      undo.onclick = () => $("undo").click();
+      dock.append(undo);
+      document.querySelector(".main").append(dock);
+      // Design-only indicator browser. Settings are deliberately isolated from
+      // the engine until the user approves this interaction/composition.
+      const indicatorBrowser = document.createElement("dialog");
+      indicatorBrowser.id = "indicatorBrowser";
+      indicatorBrowser.innerHTML = `<div class="library-head"><div><div class="folio">ALPHARCH / STUDIES & OVERLAYS</div><h1>Indicators.</h1></div><button class="library-close" aria-label="Close indicator browser">×</button></div><div class="library-body"><nav class="library-categories" aria-label="Indicator categories"></nav><div class="library-main"><label class="library-search">⌕ <input id="studySearch" placeholder="Find an indicator…" aria-label="Find an indicator"></label><div id="studyCount" class="library-count"></div><div id="studyLibrary"></div></div><aside class="on-chart"><h2>On this chart</h2><div class="small">Preview composition · individually managed</div><div id="activeStudies"></div><div id="studyEditor" class="study-editor"></div></aside></div><div class="library-foot"><span><b>DESIGN PREVIEW</b> — these settings are not applied to the chart.</span><span>Draft selection saved in this browser · no account data</span></div>`;
+      document.body.append(indicatorBrowser);
+      indicatorBrowser.querySelector(".library-close").onclick = () =>
+        indicatorBrowser.close();
+      const indicatorEntry = document.createElement("button");
+      indicatorEntry.textContent = "Indicators ＋";
+      indicatorEntry.onclick = () => indicatorBrowser.showModal();
+      chartbar.insertBefore(indicatorEntry, $("follow"));
+      const studies = [
+        {
+          id: "sma",
+          name: "Simple moving average",
+          group: "Trend",
+          symbol: "∿",
+          description: "SMA · rolling mean of price",
+          period: 20,
+          placement: "Price overlay",
+        },
+        {
+          id: "ema",
+          name: "Exponential moving average",
+          group: "Trend",
+          symbol: "∿",
+          description: "EMA · weighted toward recent prices",
+          period: 21,
+          placement: "Price overlay",
+        },
+        {
+          id: "rsi",
+          name: "Relative strength index",
+          group: "Momentum",
+          symbol: "↗",
+          description: "RSI · Wilder smoothing, 0–100",
+          period: 14,
+          placement: "Separate pane",
+        },
+        {
+          id: "macd",
+          name: "MACD",
+          group: "Momentum",
+          symbol: "≋",
+          description: "12 / 26 / 9 · signal & histogram",
+          period: 12,
+          placement: "Separate pane",
+        },
+        {
+          id: "stochastic",
+          name: "Stochastic oscillator",
+          group: "Momentum",
+          symbol: "∽",
+          description: "%K / %D · position within bar range",
+          period: 14,
+          placement: "Separate pane",
+        },
+        {
+          id: "bollinger",
+          name: "Bollinger Bands",
+          group: "Volatility",
+          symbol: "≋",
+          description: "Moving average ± 2 standard deviations",
+          period: 20,
+          placement: "Price overlay",
+        },
+        {
+          id: "atr",
+          name: "Average true range",
+          group: "Volatility",
+          symbol: "⌁",
+          description: "ATR · Wilder-smoothed true range",
+          period: 14,
+          placement: "Separate pane",
+        },
+        {
+          id: "vwap",
+          name: "Session VWAP",
+          group: "Volume & flow",
+          symbol: "∑",
+          description: "Actual traded price × quantity",
+          period: null,
+          placement: "Price overlay",
+        },
+        {
+          id: "cvd",
+          name: "Cumulative delta",
+          group: "Volume & flow",
+          symbol: "Δ",
+          description: "Classified buy minus sell volume",
+          period: null,
+          placement: "Separate pane",
+        },
+        {
+          id: "volume",
+          name: "Volume",
+          group: "Volume & flow",
+          symbol: "▥",
+          description: "Executed quantity per chart bar",
+          period: null,
+          placement: "Separate pane",
+        },
+        {
+          id: "anchored",
+          name: "Anchored VWAP",
+          group: "Volume & flow",
+          symbol: "⌖",
+          description: "User-selected start point · not implemented",
+          unavailable: true,
+          placement: "Price overlay",
+        },
+      ];
+      let studyCategory = "All indicators",
+        selectedStudy = "rsi";
+      let draftStudies = load("indicatorDesignDraft", [
+        {
+          ...studies.find((x) => x.id === "vwap"),
+          source: "Trades",
+          color: "#f0b96a",
+          visible: true,
+        },
+        {
+          ...studies.find((x) => x.id === "cvd"),
+          source: "Trades",
+          color: "#97a4c1",
+          visible: true,
+        },
+        {
+          ...studies.find((x) => x.id === "rsi"),
+          source: "close",
+          color: "#cc9b69",
+          visible: true,
+        },
+      ]);
+      function persistStudies() {
+        save("indicatorDesignDraft", draftStudies);
+      }
+      function renderStudyLibrary() {
+        const query = $("studySearch").value.toLowerCase();
+        const matches = studies.filter(
+          (x) =>
+            (studyCategory === "All indicators" || x.group === studyCategory) &&
+            (x.name + " " + x.description).toLowerCase().includes(query),
+        );
+        $("studyCount").textContent =
+          matches.length +
+          " STUDIES / " +
+          (query ? "SEARCH RESULTS" : studyCategory.toUpperCase());
+        $("studyLibrary").replaceChildren(
+          ...matches.map((study) => {
+            const row = document.createElement("div");
+            row.className = "study-row";
+            const glyph = document.createElement("span");
+            glyph.className = "study-symbol";
+            glyph.textContent = study.symbol;
+            const copy = document.createElement("div");
+            copy.className = "study-copy";
+            const name = document.createElement("strong");
+            name.textContent = study.name;
+            const description = document.createElement("small");
+            description.textContent = study.description;
+            copy.append(name, description);
+            const add = document.createElement("button");
+            const added = draftStudies.some((x) => x.id === study.id);
+            add.textContent = study.unavailable
+              ? "PLANNED"
+              : added
+                ? "ADDED"
+                : "+";
+            add.disabled = study.unavailable || added;
+            add.setAttribute("aria-label", "Add " + study.name);
+            add.onclick = () => {
+              draftStudies.push({
+                ...study,
+                source: study.period ? "close" : "Trades",
+                color: "#f0b96a",
+                visible: true,
+              });
+              selectedStudy = study.id;
+              persistStudies();
+              renderStudies();
+            };
+            row.append(glyph, copy, add);
+            return row;
+          }),
+        );
+      }
+      function renderStudies() {
+        renderStudyLibrary();
+        $("activeStudies").replaceChildren(
+          ...draftStudies.map((study) => {
+            const row = document.createElement("div");
+            row.className = "active-study";
+            const head = document.createElement("div");
+            head.className = "active-study-head";
+            const swatch = document.createElement("span");
+            swatch.className = "study-swatch";
+            swatch.style.background = study.color;
+            const name = document.createElement("button");
+            name.className = "study-title";
+            name.textContent = study.name;
+            name.onclick = () => {
+              selectedStudy = study.id;
+              renderStudyEditor();
+            };
+            const hide = document.createElement("button");
+            hide.textContent = study.visible ? "Hide" : "Show";
+            hide.onclick = () => {
+              study.visible = !study.visible;
+              persistStudies();
+              renderStudies();
+            };
+            const remove = document.createElement("button");
+            remove.textContent = "×";
+            remove.setAttribute("aria-label", "Remove " + study.name);
+            remove.onclick = () => {
+              draftStudies = draftStudies.filter((x) => x.id !== study.id);
+              persistStudies();
+              renderStudies();
+            };
+            head.append(swatch, name, hide, remove);
+            const detail = document.createElement("small");
+            detail.textContent =
+              (study.period
+                ? study.period + " · " + study.source + " · "
+                : "") +
+              study.placement +
+              (study.visible ? "" : " · hidden");
+            row.append(head, detail);
+            return row;
+          }),
+        );
+        renderStudyEditor();
+      }
+      function renderStudyEditor() {
+        const study =
+          draftStudies.find((x) => x.id === selectedStudy) || draftStudies[0];
+        $("studyEditor").replaceChildren();
+        if (!study) return;
+        selectedStudy = study.id;
+        const heading = document.createElement("h3");
+        heading.textContent = "EDIT / " + study.name.toUpperCase();
+        $("studyEditor").append(heading);
+        for (const [field, label, options] of [
+          ["period", "Period", null],
+          [
+            "source",
+            "Source",
+            ["close", "open", "high", "low", "hlc3", "Trades"],
+          ],
+          ["placement", "Placement", ["Price overlay", "Separate pane"]],
+          ["color", "Line color", null],
+          ["width", "Line weight", ["1 px", "2 px", "3 px"]],
+        ]) {
+          const row = document.createElement("label");
+          row.textContent = label;
+          const input = document.createElement(options ? "select" : "input");
+          input.setAttribute("aria-label", study.name + " " + label);
+          if (options) {
+            for (const value of options) {
+              const option = document.createElement("option");
+              option.textContent = value;
+              option.value = value;
+              input.append(option);
+            }
+          } else input.type = field === "color" ? "color" : "number";
+          input.value = study[field] ?? (field === "width" ? "1 px" : "");
+          if (field === "period") {
+            input.min = 2;
+            input.max = 200;
+            input.disabled = study.period === null || study.id === "macd";
+          }
+          if (field === "source" && study.source === "Trades")
+            input.disabled = true;
+          input.onchange = () => {
+            study[field] =
+              field === "period" ? Number(input.value) : input.value;
+            persistStudies();
+            renderStudies();
+          };
+          row.append(input);
+          $("studyEditor").append(row);
+        }
+      }
+      for (const category of [
+        "All indicators",
+        "Trend",
+        "Momentum",
+        "Volatility",
+        "Volume & flow",
+      ]) {
+        const button = document.createElement("button");
+        button.textContent = category;
+        button.classList.toggle("active", category === studyCategory);
+        button.onclick = () => {
+          studyCategory = category;
+          for (const b of indicatorBrowser.querySelectorAll(
+            ".library-categories button",
+          ))
+            b.classList.toggle("active", b === button);
+          renderStudyLibrary();
+        };
+        indicatorBrowser.querySelector(".library-categories").append(button);
+      }
+      $("studySearch").oninput = renderStudyLibrary;
+      renderStudies();
+      const quickTimeframes = document.createElement("div");
+      quickTimeframes.className = "timeframe-quick";
+      for (const [seconds, label] of [
+        [15, "15s"],
+        [60, "1m"],
+        [300, "5m"],
+        [900, "15m"],
+      ]) {
+        const button = document.createElement("button");
+        button.textContent = label;
+        button.onclick = () => {
+          $("timeframe").value = String(seconds);
+          $("timeframe").onchange();
+          for (const b of quickTimeframes.children)
+            b.classList.toggle("selected", b === button);
+        };
+        quickTimeframes.append(button);
+      }
+      chartbar.insertBefore(quickTimeframes, $("timeframe"));
+      $("timeframe").style.maxWidth = "65px";
+      connect();
+      setInterval(status, 1000);
+    </script>
+  </body>
 </html>

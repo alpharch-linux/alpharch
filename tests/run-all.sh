@@ -14,6 +14,17 @@ echo
 echo
 ./tests/brain-fence.sh "${1:-}" || rc=1
 echo
+# Workstation, adapter, indicator, execution-simulator and layout checks.
+python3 -m unittest discover -s tests -p '*.py' || rc=1
+if command -v node >/dev/null 2>&1; then
+    node tests/price-scale.cjs || rc=1
+    node tests/live_desk.cjs || rc=1
+    node tests/starters.cjs || rc=1
+else
+    printf 'Node.js is required for chart precision checks.\n'
+    rc=1
+fi
+bash tests/install.sh || rc=1
 if [[ $rc -eq 0 ]]; then printf '\033[38;2;70;179;123mALL SUITES PASSED\033[0m\n'
 else printf '\033[38;2;220;80;87mSOME SUITES FAILED\033[0m\n'; fi
 exit $rc

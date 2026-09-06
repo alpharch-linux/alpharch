@@ -37,11 +37,19 @@ for f in "$BINDIR"/*; do
 done
 done_ "commands unlinked"
 
+APP_ENTRY="$HOME/.local/share/applications/alpharch.desktop"
+if [[ -L "$APP_ENTRY" && "$(readlink -m "$APP_ENTRY")" == "$DEST/share/alpharch.desktop" ]]; then
+  rm -f "$APP_ENTRY"
+fi
+
 # 3. branding restored
 BRAND="$HOME/.config/omarchy/branding"
 for f in about.txt screensaver.txt; do
   if [[ -f "$BRAND/$f.pre-alpharch" ]]; then
     mv "$BRAND/$f.pre-alpharch" "$BRAND/$f"
+  elif [[ -f "$BRAND/$f.alpharch-created" ]]; then
+    if cmp -s "$BRAND/$f" "$DEST/branding/$f"; then rm -f "$BRAND/$f"; fi
+    rm -f "$BRAND/$f.alpharch-created"
   fi
 done
 done_ "branding restored"
@@ -54,7 +62,10 @@ fi
 if [[ "$cur" == "pit" || "$cur" == "pit-light" ]] && command -v omarchy-theme-set >/dev/null 2>&1; then
   omarchy-theme-set tokyo-night >/dev/null 2>&1 || true
 fi
-rm -rf "$HOME/.config/omarchy/themes/pit" "$HOME/.config/omarchy/themes/pit-light"
+for th in pit pit-light; do
+  target="$HOME/.config/omarchy/themes/$th"
+  [[ ! -f "$target/.alpharch-owned" ]] || rm -rf "$target"
+done
 done_ "The Pit (both shades) removed"
 
 # 5. repo out

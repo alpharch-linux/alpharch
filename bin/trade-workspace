@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The graphical workspace, using the same user configuration as terminal flow.
+source "$(dirname "$(readlink -f "$0")")/../lib/alpharch-common.sh" 2>/dev/null \
+  || source /usr/local/lib/alpharch/alpharch-common.sh
+engine="$(dirname "$(readlink -f "$0")")/alphad"
+# The live desk is the default. Advanced engine/replay arguments retain the recorded workspace.
+if [[ $# == 0 ]]; then exec "$(dirname "$(readlink -f "$0")")/trade-live"; fi
+# Replay metadata supplies the contract and tick. Do not mask it with defaults.
+for argument in "$@"; do
+  if [[ "$argument" == --replay || "$argument" == --replay=* ]]; then
+    exec "$engine" --canvas "$@"
+  fi
+done
+exec "$engine" --canvas --exchange "$(cfg exchange coinbase)" \
+  --symbol "$(cfg default_symbol BTC-USD)" --tick "$(cfg tick 10)" \
+  --bucket "$(cfg bucket 60)" "$@"

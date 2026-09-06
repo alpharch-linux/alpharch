@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Open the live desk or independent chart windows; save native monitor routing."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = Path(os.environ.get('ALPHARCH_HOME', Path.home()/'.config/alpharch'))/'live'
+STATE = Path(os.environ.get('ALPHARCH_STATE', Path.home()/'.local/state/alpharch'))
+NAME = re.compile(r'^[A-Za-z0-9_-]{1,48}$')
+
+
+def valid_name(value):
+    if not NAME.fullmatch(value):
+        raise ValueError('Use 1–48 letters, numbers, dashes or underscores for names')
+    return value
+
+
+def health(port):
+    try:
+        with urlopen(f'http://127.0.0.1:{port}/health', timeout=1) as reply:
+            return json.load(reply).get('service') == 'alpharch-chart-server'
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_server(port):
+    if health(port):
+        return
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE/'live-start.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if health(port):
+            return
+        args = [sys.executable, str(ROOT/'bin/alpharch-chart-server'), '--port', str(port)]
+        if shutil.which('systemd-run') and subprocess.run(['systemctl','--user','show-environment'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode == 0:
+            result = subprocess.run(['systemd-run','--user','--collect',f'--unit=alpharch-live-{port}', '--property=Restart=on-failure',*args],capture_output=True,text=True)
+            if result.returncode:
+                raise ValueError('Could not start live service. Check systemctl --user status alpharch-live-'+str(port))
+        else:
+            with (STATE/'live-server.log').open('a') as log:
+                subprocess.Popen(args, start_new_session=True, stdout=log, stderr=log)
+        for _ in range(40):
+            if health(port):
+                return
+            time.sleep(.1)
+        raise ValueError('Live server did not become ready; inspect the local service/log and port '+str(port))
+
+
+def monitors(kind):
+    try:
+        return json.loads(subprocess.check_output(['hyprctl','-j',kind],timeout=3,stderr=subprocess.DEVNULL))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+
+
+def window_url(name, port, asset=None, feed='coinbase', view='candles', tf=60):
+    valid_name(name)
+    if asset is not None and asset not in ('BTC','ETH','SOL'):
+        raise ValueError('Unsupported asset')
+    if feed not in ('coinbase','hyperliquid','kraken') or view not in ('candles','heat','footprint','profile','ladder','tape') or tf not in (15,60,300):
+        raise ValueError('Unsupported chart settings')
+    if type(port) is not int or not 1024<=port<=65535:
+        raise ValueError('Port must be 1024–65535')
+    params={'window':name}
+    if asset:
+        params.update(asset=asset,feed=feed,view=view,tf=tf)
+    return f'http://127.0.0.1:{port}/#'+urlencode(params)
+
+
+def browser_command(url):
+    if shutil.which('omarchy-launch-webapp'):
+        return ['omarchy-launch-webapp',url]
+    for name in ('chromium','google-chrome','brave','microsoft-edge'):
+        if shutil.which(name):
+            return [name,'--app='+url]
+    raise ValueError('A Chromium-based browser or omarchy-launch-webapp is needed for independent app windows')
+
+
+def open_window(name, port, asset=None, feed='coinbase', view='candles', tf=60, dry_run=False, workspace=None, monitor=None):
+    url=window_url(name,port,asset,feed,view,tf)
+    if workspace is not None and not re.fullmatch(r'[A-Za-z0-9_-]{1,48}',workspace):
+        raise ValueError('Invalid workspace')
+    command=browser_command(url)
+    if dry_run:
+        print(json.dumps({'window':name,'command':command}));return
+    if any(c.get('title') == 'Alpharch Live ['+name+']' for c in monitors('clients')):
+        print('Already open; preserved '+name);return
+    ensure_server(port)
+    folder=CONFIG/'windows';folder.mkdir(parents=True,exist_ok=True)
+    data=dict(name=name,port=port,asset=asset,feed=feed,view=view,tf=tf)
+    path=folder/(name+'.json');tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(data));tmp.replace(path)
+    subprocess.Popen(command,start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if workspace:
+        destination=workspace if workspace.isdigit() else 'name:'+workspace
+        for _ in range(80):
+            client=next((c for c in monitors('clients') if c.get('title') == 'Alpharch Live ['+name+']'),None)
+            if client:
+                script='source "$1"; hypr_window_to_workspace "$2" "$3"; [[ -z "$4" ]] || hypr_workspace_to_monitor "$3" "$4"'
+                subprocess.run(['bash','-c',script,'trade-live',str(ROOT/'lib/alpharch-common.sh'),client['address'],destination,monitor or ''],check=True)
+                break
+            time.sleep(.1)
+        else:
+            raise ValueError('Window opened but placement was not confirmed; browser title not found')
+    print('Opened '+url)
+
+
+def save_layout(name):
+    valid_name(name)
+    display={m['id']:m['name'] for m in monitors('monitors')}
+    windows=[]
+    for client in monitors('clients'):
+        match=re.search(r'^Alpharch Live \[([A-Za-z0-9_-]{1,48})\]',client.get('title',''))
+        if not match:
+            continue
+        path=CONFIG/'windows'/(match[1]+'.json')
+        if not path.is_file():
+            continue
+        windows.append({'window':json.loads(path.read_text()),'workspace':str(client.get('workspace',{}).get('name','1')),'monitor':display.get(client.get('monitor'))})
+    if not windows:
+        raise ValueError('No native live chart windows found. Open one with trade-live --window btc --asset BTC')
+    folder=CONFIG/'layouts';folder.mkdir(parents=True,exist_ok=True)
+    path=folder/(name+'.json');tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps({'schema':'alpharch.live-native/1','windows':windows},indent=2));tmp.replace(path)
+    print('Saved '+str(len(windows))+' windows. Chart contents remain in the same browser profile; export Desk layouts for portable backup.')
+
+
+def validate_layout(data):
+    if not isinstance(data,dict) or data.get('schema')!='alpharch.live-native/1' or not isinstance(data.get('windows'),list) or not 1<=len(data['windows'])<=12:
+        raise ValueError('Expected 1–12 native chart windows')
+    seen=set()
+    for item in data['windows']:
+        w=item['window'];window_url(**w)
+        if w['name'] in seen:
+            raise ValueError('Duplicate window name')
+        seen.add(w['name'])
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,48}',item.get('workspace','')):
+            raise ValueError('Unsupported workspace name')
+        if item.get('monitor') is not None and not isinstance(item['monitor'],str):
+            raise ValueError('Invalid monitor name')
+    return data
+
+
+def load_layout(name,dry_run=False):
+    valid_name(name);data=validate_layout(json.loads((CONFIG/'layouts'/(name+'.json')).read_text()))
+    displays=[m['name'] for m in monitors('monitors')]
+    active={m.group(1) for c in monitors('clients') if (m:=re.search(r'^Alpharch Live \[([A-Za-z0-9_-]{1,48})\]',c.get('title','')))}
+    for i,item in enumerate(data['windows']):
+        w=item['window'];monitor=item.get('monitor')
+        if monitor not in displays:
+            monitor=displays[i%len(displays)] if displays else None
+        if w['name'] in active:
+            print('Already open; preserved '+w['name']);continue
+        args=[str(ROOT/'bin/trade-live'),'--window',w['name'],'--port',str(w['port'])]
+        if w.get('asset'):
+            args+=['--asset',w['asset'],'--feed',w['feed'],'--view',w['view'],'--tf',str(w['tf'])]
+        print(json.dumps({'command':args,'workspace':item['workspace'],'monitor':monitor}))
+        if dry_run:
+            continue
+        open_window(**w,workspace=item['workspace'] if displays else None,monitor=monitor)
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',nargs='?',choices=('open','save','load','list'),default='open')
+    parser.add_argument('name',nargs='?')
+    parser.add_argument('--window',default='desk')
+    parser.add_argument('--workspace')
+    parser.add_argument('--monitor')
+    parser.add_argument('--port',type=int,default=17863)
+    parser.add_argument('--asset',choices=('BTC','ETH','SOL'))
+    parser.add_argument('--feed',choices=('coinbase','hyperliquid','kraken'),default='coinbase')
+    parser.add_argument('--view',choices=('candles','heat','footprint','profile','ladder','tape'),default='candles')
+    parser.add_argument('--tf',type=int,choices=(15,60,300),default=60)
+    parser.add_argument('--dry-run',action='store_true')
+    args=parser.parse_args()
+    try:
+        if args.action=='open':open_window(args.window,args.port,args.asset,args.feed,args.view,args.tf,args.dry_run,args.workspace,args.monitor)
+        elif args.action=='save':save_layout(args.name or '')
+        elif args.action=='load':load_layout(args.name or '',args.dry_run)
+        else:print('\n'.join(p.stem for p in sorted((CONFIG/'layouts').glob('*.json'))))
+    except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError) as error:
+        parser.exit(1,'Live desk: '+str(error)+'\n')
+
+if __name__=='__main__':main()

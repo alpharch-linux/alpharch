@@ -17,7 +17,7 @@ o.bind("SUPER + ALT + E", "Depth ladder (DOM)", "omarchy-launch-terminal trade-f
 o.bind("SUPER + ALT + H", "Liquidity heatmap", "omarchy-launch-terminal trade-flow '' heat")
 
 -- The flow canvas: the two worlds — candles into the liquidity fog. Real pixels.
-o.bind("SUPER + ALT + V", "Flow canvas", "alphad --canvas")
+o.bind("SUPER + ALT + V", "Trading workspace", "trade-workspace")
 
 -- The Desk Brain: your own record, read back to you. Q for Question.
 -- Q was the only clean letter left under SUPER+ALT on a stock Omarchy desk

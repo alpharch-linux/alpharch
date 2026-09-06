@@ -35,12 +35,27 @@ echo
 command -v git >/dev/null 2>&1 || {
   printf '%bgit is required. On Arch:  sudo pacman -S git%b\n' "$RED" "$R"; exit 1; }
 
+if [[ -L "$SRC" ]]; then
+  echo "Source path is a symlink: $SRC. Nothing changed." >&2
+  exit 1
+fi
+
 if [[ -d "$SRC/.git" ]]; then
   printf '%b▸ updating existing checkout%b\n' "$AMBER" "$R"
-  git -C "$SRC" pull --ff-only || { rm -rf "$SRC"; git clone --depth 1 "$REPO" "$SRC"; }
+  origin="$(git -C "$SRC" remote get-url origin)" || {
+    echo "Could not identify the existing checkout. Nothing changed." >&2; exit 1; }
+  [[ "$origin" == "$REPO" || "$origin" == "git@github.com:alpharch-linux/alpharch.git" ]] || {
+    echo "This source path belongs to a different repository. Nothing changed." >&2; exit 1; }
+  changes="$(git -C "$SRC" status --porcelain)" || {
+    echo "Could not inspect the existing checkout. Nothing changed." >&2; exit 1; }
+  [[ -z "$changes" ]] || {
+    echo "Checkout has local changes: $SRC. Keep or commit them before updating." >&2; exit 1; }
+  git -C "$SRC" pull --ff-only || {
+    echo "Update failed; existing checkout preserved." >&2; exit 1; }
 else
+  [[ ! -e "$SRC" ]] || {
+    echo "Source path already exists: $SRC. Nothing changed." >&2; exit 1; }
   printf '%b▸ cloning %s%b\n' "$AMBER" "$REPO" "$R"
-  rm -rf "$SRC"
   git clone --depth 1 "$REPO" "$SRC"
 fi
 
@@ -55,4 +70,4 @@ bash "$SRC/install.sh" < /dev/null
 
 echo
 printf '%b✓ Alpharch is installed.%b  %bIf a command is "not found", open a new terminal.%b\n' "$UP" "$R" "$DIM" "$R"
-printf '%bstart:%b  alpharch doctor   ·   omarchy-theme-set pit   ·   SUPER+ALT+O\n' "$AMBER" "$R"
+printf '%bstart:%b  trade-workspace   ·   SUPER+ALT+V   ·   alpharch doctor\n' "$AMBER" "$R"

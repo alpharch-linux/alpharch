@@ -23,11 +23,12 @@ HYPR_BINDINGS="$HOME/.config/hypr/bindings.lua"
 MARK_BEGIN="-- ALPHARCH BEGIN (managed block — do not edit inside; edit ~/.local/share/alpharch)"
 MARK_END="-- ALPHARCH END"
 
-NO_BRANDING=0; NO_THEME=0
+NO_BRANDING=0; NO_THEME=0; NO_BINDINGS=0
 for a in "$@"; do
   case "$a" in
     --no-branding) NO_BRANDING=1 ;;
     --no-theme)    NO_THEME=1 ;;
+    --no-keybindings) NO_BINDINGS=1 ;;
     *) echo "unknown flag: $a"; exit 1 ;;
   esac
 done
@@ -48,6 +49,38 @@ echo
 if ! command -v hyprctl >/dev/null 2>&1 && [[ ! -d "$HOME/.config/omarchy" ]]; then
   printf '%bThis looks like neither Omarchy nor Hyprland. Continuing anyway —%b\n' "$DIM" "$R"
   printf '%bthe trade-* commands work in any terminal; desk/bindings need Hyprland.%b\n' "$DIM" "$R"
+fi
+
+# Refuse collisions before changing the installation. Unrelated commands and
+# themes belong to the user, even when they happen to share our names.
+for f in "$SRC"/bin/*; do
+  [[ -f "$f" ]] || continue
+  target="$BINDIR/$(basename "$f")"
+  if [[ -e "$target" || -L "$target" ]]; then
+    if [[ ! -L "$target" || "$(readlink -m "$target")" != "$DEST/bin/$(basename "$f")" ]]; then
+      echo "Command conflict: $target. Existing file preserved; installation stopped." >&2
+      exit 1
+    fi
+  fi
+done
+if [[ "$NO_THEME" == 0 ]]; then
+  for th in pit pit-light; do
+    target="$HOME/.config/omarchy/themes/$th"
+    if [[ -e "$target" && ! -f "$target/.alpharch-owned" ]]; then
+      if ! diff -qr "$SRC/themes/$th" "$target" >/dev/null 2>&1; then
+        echo "Theme conflict: $target. Existing theme preserved; installation stopped." >&2
+        exit 1
+      fi
+    fi
+  done
+fi
+
+APP_ENTRY="$HOME/.local/share/applications/alpharch.desktop"
+if [[ -e "$APP_ENTRY" || -L "$APP_ENTRY" ]]; then
+  if [[ ! -L "$APP_ENTRY" || "$(readlink -m "$APP_ENTRY")" != "$DEST/share/alpharch.desktop" ]]; then
+    echo "App menu conflict: $APP_ENTRY. Existing file preserved; installation stopped." >&2
+    exit 1
+  fi
 fi
 
 # ── 1. put the repo in its place ───────────────────────────────────────────
@@ -73,7 +106,11 @@ case ":$PATH:" in
 esac
 done_ "$(ls "$DEST"/bin | tr '\n' ' ')"
 
+mkdir -p "$(dirname "$APP_ENTRY")"
+ln -sf "$DEST/share/alpharch.desktop" "$APP_ENTRY"
+
 # ── 3. keybindings (marked block, idempotent) ──────────────────────────────
+if [[ "$NO_BINDINGS" == 0 ]]; then
 step "wiring SUPER+ALT bindings into $HYPR_BINDINGS"
 mkdir -p "$(dirname "$HYPR_BINDINGS")"
 touch "$HYPR_BINDINGS"
@@ -96,6 +133,7 @@ awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
   echo "$MARK_END"
 } >> "$HYPR_BINDINGS"
 done_ "bindings installed (SUPER+ALT+A/T/O/M/B/J/N/D)"
+fi
 
 # ── 4. The Pit theme ───────────────────────────────────────────────────────
 if [[ "$NO_THEME" == 0 ]]; then
@@ -105,6 +143,7 @@ if [[ "$NO_THEME" == 0 ]]; then
   for th in pit pit-light; do
     rm -rf "${THEMES_DIR:?}/$th"
     cp -r "$DEST/themes/$th" "$THEMES_DIR/$th"
+    touch "$THEMES_DIR/$th/.alpharch-owned"
   done
   done_ "themes at $THEMES_DIR/{pit,pit-light} — flip anytime with SUPER+ALT+I"
   if command -v omarchy-theme-set >/dev/null 2>&1; then
@@ -118,9 +157,10 @@ if [[ "$NO_BRANDING" == 0 ]]; then
   BRAND="$HOME/.config/omarchy/branding"
   mkdir -p "$BRAND"
   for f in about.txt screensaver.txt; do
-    if [[ -f "$BRAND/$f" && ! -f "$BRAND/$f.pre-alpharch" ]]; then
+    if [[ -f "$BRAND/$f" && ! -f "$BRAND/$f.pre-alpharch" && ! -f "$BRAND/$f.alpharch-created" ]]; then
       cp "$BRAND/$f" "$BRAND/$f.pre-alpharch"
     fi
+    [[ -f "$BRAND/$f" ]] || touch "$BRAND/$f.alpharch-created"
     cp "$DEST/branding/$f" "$BRAND/$f"
   done
   done_ "fastfetch shows the mark; screensaver runs the banner"
@@ -189,6 +229,8 @@ printf '%b' "$AMBER"
 echo "  ────────────────────────────────────────────"
 printf '%b\n' "$R"
 say "Done. Start here:"
+say "  trade-workspace     open the live chart desk"
+say "  trade-live --window btc --asset BTC   independent native chart"
 say "  alpharch            the command map"
 say "  alpharch doctor     check every dependency and feed"
 say "  SUPER+ALT+A         The Line — type 'btc heat' and go"

@@ -178,3 +178,25 @@ notify() {
   if have notify-send; then notify-send -a Alpharch "$title" "$body"
   else printf '%b%s%b %s\n' "${PIT_AMBER}" "$title" "${PIT_RESET}" "$body" >&2; fi
 }
+
+# Targeted app placement after a browser hands off to its existing process.
+# The caller must supply an observed window address, never the active window.
+hypr_window_to_workspace() {
+  in_hypr || return 1
+  [[ "$1" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+  if hypr_lua_dispatch; then
+    hyprctl dispatch "hl.dsp.window.move({ window = \"address:$1\", workspace = \"$(lua_quote "$2")\", follow = false })"
+  else
+    hyprctl dispatch movetoworkspacesilent "$2,address:$1"
+  fi
+}
+
+hypr_window_close() {
+  in_hypr || return 1
+  [[ "$1" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+  if hypr_lua_dispatch; then
+    hyprctl dispatch "hl.dsp.window.close({ window = \"address:$1\" })"
+  else
+    hyprctl dispatch closewindow "address:$1"
+  fi
+}
