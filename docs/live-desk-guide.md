@@ -10,6 +10,8 @@ Hover a candle for OHLC, volume and classified delta where captured. Auto footpr
 
 Use Markets to select among the nine public source/market combinations across Coinbase, Hyperliquid and Kraken. Set an optional A/B/C group in Tools to link symbols; compatible charts share a cursor. Native windows in the same browser profile/origin can share those groups. Indicators supports named study templates and independent lower-pane scale zoom. Layouts autosave in this browser; named saves and import/export are available under Desk.
 
+For the left drawing rail, full interval picker, per-chart history and grid, DOM views and compact ticket, see [Chart tools and tickets](chart-tools-and-tickets.md).
+
 ## Independent native windows
 
 ```sh

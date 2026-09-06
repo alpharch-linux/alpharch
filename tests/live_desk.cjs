@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const html=fs.readFileSync(require('path').join(__dirname,'../share/desk.html'),'utf8');const js=html.split('<script>')[1].split('</script>')[0];new vm.Script(js);const pure=js.split('function starter()')[0];const context={document:{getElementById:()=>({})},location:{hash:''},URLSearchParams,assert};vm.createContext(context);
+const html=fs.readFileSync(require('path').join(__dirname,'../share/desk.html'),'utf8');const js=html.split('<script>')[1].split('</script>')[0];new vm.Script(js);const pure=js.split('function starter()')[0];const context={FlowOverlays:require('../share/flow-overlays.js'),TradePanel:require('../share/trade-panel.js'),DrawingTools:require('../share/drawing-tools.js'),Intervals:require('../share/intervals.js'),document:{getElementById:()=>({})},location:{hash:''},URLSearchParams,assert};vm.createContext(context);
 vm.runInContext(pure+`
 liveMarkets['coinbase:BTC']={tick:.01,bars:[{t:120,o:100,h:101,l:100,c:101,v:3,buy:2,sell:1,pv:302,footprint:[[100,1,0],[101,0,2]]},{t:135,o:101,h:102,l:101,c:102,v:1,buy:1,sell:0,pv:102,footprint:[[102,0,1]]}],historical:[{t:60,o:99,h:100,l:98,c:99,v:10,buy:null,sell:null,historical:true}]};
 const c={asset:'BTC',feed:'coinbase',tf:60},bars=barsFor(c);assert.equal(bars.length,2);assert.equal(bars[0].buy,null);assert.equal(bars[1].v,4);assert.equal(bars[1].buy,3);assert.equal(bars[1].sell,1);assert.equal(bars[1].pv,404);assert.deepEqual(bars[1].footprint,[[100,1,0],[101,0,2],[102,0,1]]);
@@ -51,3 +51,13 @@ vm.runInContext(js.slice(js.indexOf('function validLayout('),js.indexOf('functio
 const savedChart={...makeChart({w:1}),studies:[{...study('bollinger'),deviations:2.5,upperColor:'#123456',lowerColor:'#654321'},{...study('stochastic'),smoothK:4,smoothD:5,signalColor:'#abcdef',pane:true}]};const saved={name:'SPECIMEN layout',palette:'pit',charts:[savedChart]};const roundtrip=JSON.parse(JSON.stringify(saved));assert(validLayout(roundtrip));assert.deepEqual(roundtrip,saved);roundtrip.charts[0].studies[1].smoothD=0;assert(!validLayout(roundtrip),'reject malformed smoothing');roundtrip.charts[0].studies[1].smoothD=5;roundtrip.charts[0].studies[0].deviations=Infinity;assert(!validLayout(roundtrip),'reject malformed deviations');
 `,context);
 console.log('Bollinger/stochastic calculations, warm-up, cache edits, saved settings, sequential event slots and exact exchange-time mapping passed.');
+vm.runInContext(`
+const detailedChart=makeChart({w:1,...Intervals.parse('4h'),historyBars:700,historyDays:180,grid:{density:'dense',contrast:.6,visible:true,minor:true},crosshair:false,drawingPrefs:{...DrawingTools.defaults,color:'#abcd12'},drawings:DrawingTools.catalog.map(d=>({type:d.id,text:d.name,points:(d.id==='shortposition'?[{t:100,p:100},{t:110,p:110},{t:120,p:90}]:[{t:100,p:100},{t:110,p:90},{t:120,p:110}]).slice(0,d.anchors||2),style:{...DrawingTools.defaults}}))});
+const sibling=makeChart({w:.5,...Intervals.parse('40R'),historyBars:80,historyDays:1});
+const customDesk={name:'SPECIMEN custom chart desk',palette:'pit',charts:[detailedChart,sibling]};
+assert(validLayout(customDesk),'full drawing and per-chart settings accepted');
+const savedDesk=JSON.parse(JSON.stringify(customDesk));assert(validLayout(savedDesk));assert.equal(savedDesk.charts[1].historyBars,80);assert.equal(savedDesk.charts[0].tf,14400);assert.equal(savedDesk.charts[0].drawings.length,22);
+assert.notEqual(barRequestKey(detailedChart),barRequestKey({...detailedChart,historyBars:80}),'same market/interval with different history uses a distinct response key');
+for(const bad of [{historyBars:2001},{historyDays:-1},{grid:{density:'dense',contrast:Infinity,visible:true,minor:true}},{crosshair:3},{interval:{unit:'h',value:3}},{drawings:[null]}])assert(!validLayout({...customDesk,charts:[{...detailedChart,...bad}]}),'invalid new settings rejected');
+`,context);
+console.log('Per-chart history, intervals, grid, crosshair and all drawing types survive layout validation independently.');
