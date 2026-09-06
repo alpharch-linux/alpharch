@@ -116,11 +116,22 @@ def open_window(key, port, workspace, monitor=None):
     raise ValueError('The window launch could not be confirmed. Check your app browser before retrying.')
 
 
-def launch_document(value, port, source=None, workspace='alpharch'):
+def home_workspace():
+    existing = clients()
+    if existing:
+        return str(existing[0]['workspace']['name'])
+    occupied = {w.get('id') for w in live.monitors('workspaces')}
+    # Numbered workspaces stay reachable with Omarchy's workspace keys. Do not
+    # put the new desk into a workspace occupied by the user's other apps.
+    return str(next(i for i in [9, 8, 7, 6, 10, *range(11, 1000)] if i not in occupied))
+
+
+def launch_document(value, port, source=None, workspace=None):
     if type(port) is not int or not 1024 <= port <= 65535:
         raise ValueError('Invalid local service port.')
     require_hyprland()
     value = document(value)
+    workspace = workspace or home_workspace()
     if len(clients()) + max(1, len(value['charts'])) > 12:
         raise ValueError('Twelve Hyprland chart windows are already in use. Close a window before adding more.')
     if source:

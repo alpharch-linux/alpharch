@@ -37,13 +37,17 @@ class NativeDeskTests(unittest.TestCase):
         doc = native.read('windows',key)
         self.assertEqual(doc['charts'][0], {**self.chart,'x':0,'y':0,'w':1,'h':1})
         self.assertEqual(self.doc,original)
-        native.open_window.assert_called_once_with(key,17866,'alpharch')
+        native.open_window.assert_called_once_with(key,17866,'9')
         self.assertFalse((self.store.parent/'live').exists())
 
     def test_new_chart_uses_its_parent_workspace(self):
         with patch.object(native,'clients',return_value=[self.client(workspace='trading-left')]):
             native.action({'action':'open','document':self.doc,'source':'chart-a'},17866)
         self.assertEqual(native.open_window.call_args.args[2],'trading-left')
+
+    def test_default_desk_does_not_take_an_occupied_workspace(self):
+        with patch.object(native.live,'monitors',side_effect=lambda kind: [{'id':9}] if kind=='workspaces' else []):
+            self.assertEqual(native.home_workspace(),'8')
 
     def test_save_and_restore_missing_monitor_preserves_live_charts(self):
         native.write('windows','chart-a',self.doc)

@@ -13,7 +13,7 @@ def main():
     parser.add_argument('action', choices=('open', 'save', 'load', 'list'), nargs='?', default='open')
     parser.add_argument('name', nargs='?')
     parser.add_argument('--port', type=int, default=17863)
-    parser.add_argument('--workspace', default='alpharch')
+    parser.add_argument('--workspace')
     args = parser.parse_args()
     try:
         if args.action == 'list':
@@ -26,7 +26,7 @@ def main():
             if existing:
                 native.focus(existing[0])
             else:
-                print(native.launch_document({'name':'Hyprland desk', 'palette':'pit', 'charts':[]}, args.port, workspace=native.name(args.workspace))['note'])
+                print(native.launch_document({'name':'Hyprland desk', 'palette':'pit', 'charts':[]}, args.port, workspace=native.name(args.workspace) if args.workspace else None)['note'])
     except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, 'Hyprland desk: '+str(error)+'\n')
 

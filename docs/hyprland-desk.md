@@ -10,7 +10,8 @@ drawings, exact instrument increments, custom intervals, indicators and draft
 trading panel. It uses Omarchy's installed app-browser launcher; this is not a
 second implementation of the chart renderer.
 
-Choosing a Hyprland template creates its windows on the `alpharch` workspace.
+Choosing a Hyprland template creates its windows on an unused numbered workspace
+(9 when available), reachable with Omarchy's normal workspace shortcuts.
 **New chart** or **Ctrl+N** opens the chart picker. From an existing chart, Add
 opens another real window on that chart's workspace. An empty window receives
 its first chart directly. Futures contracts are selected through **Connect**;
