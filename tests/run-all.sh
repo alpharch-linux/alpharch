@@ -21,6 +21,7 @@ if command -v node >/dev/null 2>&1; then
     node tests/live_desk.cjs || rc=1
     node tests/starters.cjs || rc=1
     node tests/chart-controls.cjs || rc=1
+    node tests/trade-panel.cjs || rc=1
 else
     printf 'Node.js is required for chart precision checks.\n'
     rc=1

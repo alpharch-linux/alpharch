@@ -74,9 +74,35 @@ change price after selection. They require a fresh bid and ask.
 
 Market, Limit, Stop Market and Stop Limit are selectable. Stop Limit keeps the
 trigger and limit separate. Quantity, exact prices and optional bracket/TIF
-fields can be edited. Brackets and time in force are collapsed by default.
+fields can be edited. **Order setup** selects Single, OCO, Bracket or OTO.
+Single keeps the extra fields collapsed; choosing a linked setup opens its
+fields, which can be collapsed again to keep the ticket small.
+
+- **OCO:** two orders for the chart's instrument, each with its own side, type,
+  quantity, limit and/or trigger. The saved plan links them so a full fill of
+  either is intended to cancel the other. They can be same-side exits or
+  opposite-side entries; neither depends on the other filling first.
+- **Bracket:** the entry has two opposite-side exits of matching quantity:
+  a limit target and a Stop Market or Stop Limit. The saved plan activates
+  those exits after entry fills and links only the exits as OCO.
+- **OTO:** the saved plan activates a second configurable order after the
+  entry fills. It does not add an OCO relationship.
+
+Time in force applies to all legs created by this editor. Saved plans display
+each leg and the intended link in Activity and retain the relationship on
+reload/export. Earlier drafts with unlinked stop/target prices remain readable
+and are not silently converted into bracket orders. Selecting Single ignores
+the hidden linked-order fields when saving a new ticket.
+
+These relationships are **local draft metadata**, not a cancellation or order
+activation engine. Partial-fill handling and where conditional orders would
+be held are explicitly unverified. Broker adapters must validate order support,
+partial-fill sizing/cancellation, rejection handling and transmission before
+any linked group can be submitted. No live OCO protection is active here.
+
 Notional is a local estimate before fees, not an account balance or margin
-calculation. Futures quantities require whole contracts and prices must follow
+calculation; an OCO ticket labels it as the first order's estimate. Futures
+quantities in every leg require whole contracts and prices must follow
 the native tick. Saved drafts appear in Activity; up to 20 fit on each chart.
 
 **No broker orders are sent by this ticket.** Live/paper broker execution is
@@ -103,6 +129,9 @@ login. Provider capabilities must be verified before enabling order types.
 - [Coinbase candle limits](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles)
 - [Rithmic integration documentation](https://www.rithmic.com/documentation)
 - [IBKR API order submission and callbacks](https://ibkrcampus.com/campus/trading-lessons/python-placing-orders/?retakeFinal=1)
+- [IBKR bracket order relationships and transmission](https://www.interactivebrokers.com/docs/general/order-types/complex-orders/bracket-orders)
+- [IBKR OCA fill and cancellation behavior](https://www.interactivebrokers.com/campus/glossary-terms/one-cancels-all-oca-order/)
+- [CQG bracket and linked order entry](https://help.cqg.com/cqgic/25/Documents/enteringbracketorders.htm)
 
 Validation: offline suites cover drawing geometry and persistence, interval
 boundaries, per-chart history, history/live aggregation, native-tick grids,
@@ -110,5 +139,9 @@ missing-depth handling, actual-print filters and quote-side selection. Fake
 HOME full/no-theme/commands-only repeated installs and uninstalls pass. Public
 Coinbase history and retained-trade requests were checked live. Browser checks
 cover the compact ticket, all four quote choices, Stop Limit fields, tab
-separation, local draft save/remove and the classic DOM. No real broker order
-or broker account test was performed.
+separation, local draft save/remove and the classic DOM. Linked-ticket tests
+cover OCO/OTO/bracket relationships, opposite-side bracket exits, native prices
+and quantities in every leg, malformed links and compatibility with older
+drafts. Browser checks verify OCO save/reload, bracket Stop Limit fields and
+switching back to Single. No real broker order or broker account test was
+performed.
