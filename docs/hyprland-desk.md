@@ -1,6 +1,9 @@
 # Two ways to open Alpharch
 
 Choose **Classic desk** or **Hyprland desk** on the starting-template screen.
+The main desk shows this screen on every launch, even with a saved layout.
+**Continue current desk** returns to the saved Classic desk. Individual
+Hyprland chart windows open directly without another chooser.
 Reopen that screen from **Desk → Choose a starting desk…**. The Classic desk,
 its saved layouts, and the existing `Super+Alt+V` launcher remain available.
 
