@@ -150,10 +150,11 @@ in `config.toml`. From The Line: `cal` or `news`.
 
 ## Two shades, every theme
 
-The Pit (dark): near-black, one amber line. The Pit, white: the printed
-prospectus — paper, ink, amber marker. `SUPER+ALT+I` flips the whole OS
-between them. Both wallpapers plot the same market line — once on the
-screen, once in print.
+The Pit (dark) now opens with **After Hours**: the Alpharch mark in brushed
+metal and copper against deep petrol planes. A quieter alternate background
+is included. The Pit, white keeps the printed prospectus palette: paper, ink
+and amber. `SUPER+ALT+I` flips between the two themes. The new wallpaper is
+also available from [alpharch.org](https://alpharch.org/#wallpaper).
 
 And because Alpharch reads the active Omarchy theme's palette at
 launch, `omarchy-theme-set kanagawa` (or any of the community's 150+

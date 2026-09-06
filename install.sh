@@ -68,8 +68,25 @@ if [[ "$NO_THEME" == 0 ]]; then
     target="$HOME/.config/omarchy/themes/$th"
     if [[ -e "$target" && ! -f "$target/.alpharch-owned" ]]; then
       if ! diff -qr "$SRC/themes/$th" "$target" >/dev/null 2>&1; then
-        echo "Theme conflict: $target. Existing theme preserved; installation stopped." >&2
-        exit 1
+        # Older releases predate ownership markers. Recognize their exact stock
+        # Pit image only when every other theme file still matches the source.
+        legacy_pit=0
+        if [[ "$th" == pit && -f "$target/backgrounds/01-the-pit.png" ]]; then
+          legacy_hash="$(sha256sum "$target/backgrounds/01-the-pit.png")"
+          if [[ "${legacy_hash%% *}" == 2d5da689cf9eef2ded753b92759fcba670ec85f881e1df1a3807cfac23f105d3 ]]; then
+            legacy_reference="$(mktemp -d)"
+            if cp -r "$SRC/themes/$th/." "$legacy_reference/" \
+              && cp "$target/backgrounds/01-the-pit.png" "$legacy_reference/backgrounds/01-the-pit.png" \
+              && diff -qr "$legacy_reference" "$target" >/dev/null 2>&1; then
+              legacy_pit=1
+            fi
+            rm -rf -- "${legacy_reference:?}"
+          fi
+        fi
+        if [[ "$legacy_pit" == 0 ]]; then
+          echo "Theme conflict: $target. Existing theme preserved; installation stopped." >&2
+          exit 1
+        fi
       fi
     fi
   done

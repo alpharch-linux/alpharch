@@ -46,3 +46,24 @@ fi
 [[ $(cat "$test_home/.local/bin/alphad") == 'user program' ]]
 [[ ! -e "$test_home/.local/share/alpharch" ]]
 echo 'Command collision preserves user file and stops before installation'
+
+# Upgrade the original unmarked Pit wallpaper, but preserve a user's edits.
+for variant in legacy-pit custom-pit; do
+  test_home="$test_root/$variant"
+  mkdir -p "$test_home/.config/omarchy/themes"
+  cp -r themes/pit "$test_home/.config/omarchy/themes/pit"
+  cp tests/fixtures/pit-original.png "$test_home/.config/omarchy/themes/pit/backgrounds/01-the-pit.png"
+  if [[ $variant == custom-pit ]]; then
+    printf '\n# user palette edit\n' >> "$test_home/.config/omarchy/themes/pit/colors.toml"
+    if env HOME="$test_home" PATH="$test_root/stubs:$PATH" bash install.sh > "$test_root/$variant.log" 2>&1; then
+      echo 'Expected modified theme protection' >&2; exit 1
+    fi
+    rg -q 'user palette edit' "$test_home/.config/omarchy/themes/pit/colors.toml"
+    cmp tests/fixtures/pit-original.png "$test_home/.config/omarchy/themes/pit/backgrounds/01-the-pit.png"
+  else
+    env HOME="$test_home" PATH="$test_root/stubs:$PATH" HYPRLAND_INSTANCE_SIGNATURE= XDG_RUNTIME_DIR="$test_root/runtime" bash install.sh > "$test_root/$variant.log"
+    cmp themes/pit/backgrounds/01-the-pit.png "$test_home/.config/omarchy/themes/pit/backgrounds/01-the-pit.png"
+    [[ -f "$test_home/.config/omarchy/themes/pit/.alpharch-owned" ]]
+  fi
+  echo "$variant: wallpaper upgrade and user-content protection passed"
+done
