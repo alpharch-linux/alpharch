@@ -25,6 +25,8 @@ for variant in full no-theme commands-only; do
     [[ $(rg -c '^-- ALPHARCH BEGIN' "$test_home/.config/hypr/bindings.lua") == 1 ]]
   fi
   [[ -L "$test_home/.local/share/applications/alpharch.desktop" ]]
+  [[ -L "$test_home/.local/share/applications/alpharch-hyprland.desktop" ]]
+  [[ -L "$test_home/.local/bin/trade-hyprland" ]]
   [[ -L "$test_home/.local/bin/trade-live" ]]
   [[ -L "$test_home/.local/bin/alpha-import-futures" ]]
   printf 'journal stays\n' > "$test_home/Documents/trading-journal/test.md"
@@ -35,6 +37,7 @@ for variant in full no-theme commands-only; do
   [[ ! -e "$test_home/.config/omarchy/branding/about.txt" ]]
   [[ ! -e "$test_home/.local/share/alpharch" ]]
   [[ ! -L "$test_home/.local/share/applications/alpharch.desktop" ]]
+  [[ ! -L "$test_home/.local/share/applications/alpharch-hyprland.desktop" ]]
   echo "$variant: repeated install and uninstall passed"
 done
 test_home="$test_root/conflict"
@@ -67,3 +70,16 @@ for variant in legacy-pit custom-pit; do
   fi
   echo "$variant: wallpaper upgrade and user-content protection passed"
 done
+
+# The optional native entry must never overwrite an unrelated app.
+for app_name in alpharch alpharch-hyprland; do
+  test_home="$test_root/app-conflict-$app_name"
+  mkdir -p "$test_home/.local/share/applications"
+  printf 'user app' > "$test_home/.local/share/applications/$app_name.desktop"
+  if env HOME="$test_home" PATH="$test_root/stubs:$PATH" bash install.sh --no-theme > "$test_root/app-conflict.log" 2>&1; then
+    echo 'Expected app entry conflict failure' >&2; exit 1
+  fi
+  [[ $(cat "$test_home/.local/share/applications/$app_name.desktop") == 'user app' ]]
+  [[ ! -e "$test_home/.local/share/alpharch" ]]
+done
+echo 'Both app entry collisions preserve user files'

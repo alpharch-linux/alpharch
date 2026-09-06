@@ -200,3 +200,14 @@ hypr_window_close() {
     hyprctl dispatch closewindow "address:$1"
   fi
 }
+
+# Focus only an observed app window, including when reopening a saved desk.
+hypr_window_focus() {
+  in_hypr || return 1
+  [[ "$1" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+  if hypr_lua_dispatch; then
+    hyprctl dispatch "hl.dsp.focus({ window = \"address:$1\" })"
+  else
+    hyprctl dispatch focuswindow "address:$1"
+  fi
+}

@@ -92,13 +92,15 @@ if [[ "$NO_THEME" == 0 ]]; then
   done
 fi
 
-APP_ENTRY="$HOME/.local/share/applications/alpharch.desktop"
-if [[ -e "$APP_ENTRY" || -L "$APP_ENTRY" ]]; then
-  if [[ ! -L "$APP_ENTRY" || "$(readlink -m "$APP_ENTRY")" != "$DEST/share/alpharch.desktop" ]]; then
-    echo "App menu conflict: $APP_ENTRY. Existing file preserved; installation stopped." >&2
-    exit 1
+for app_name in alpharch alpharch-hyprland; do
+  APP_ENTRY="$HOME/.local/share/applications/$app_name.desktop"
+  if [[ -e "$APP_ENTRY" || -L "$APP_ENTRY" ]]; then
+    if [[ ! -L "$APP_ENTRY" || "$(readlink -m "$APP_ENTRY")" != "$DEST/share/$app_name.desktop" ]]; then
+      echo "App menu conflict: $APP_ENTRY. Existing file preserved; installation stopped." >&2
+      exit 1
+    fi
   fi
-fi
+done
 
 # ── 1. put the repo in its place ───────────────────────────────────────────
 step "installing to $DEST"
@@ -123,8 +125,10 @@ case ":$PATH:" in
 esac
 done_ "$(ls "$DEST"/bin | tr '\n' ' ')"
 
-mkdir -p "$(dirname "$APP_ENTRY")"
-ln -sf "$DEST/share/alpharch.desktop" "$APP_ENTRY"
+mkdir -p "$HOME/.local/share/applications"
+for app_name in alpharch alpharch-hyprland; do
+  ln -sf "$DEST/share/$app_name.desktop" "$HOME/.local/share/applications/$app_name.desktop"
+done
 
 # ── 3. keybindings (marked block, idempotent) ──────────────────────────────
 if [[ "$NO_BINDINGS" == 0 ]]; then

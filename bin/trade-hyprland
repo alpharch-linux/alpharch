@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Open Alpharch's separate Hyprland desk; the Classic launcher is unchanged."""
+import argparse
+from pathlib import Path
+import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'lib'))
+import alpharch_native as native
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('open', 'save', 'load', 'list'), nargs='?', default='open')
+    parser.add_argument('name', nargs='?')
+    parser.add_argument('--port', type=int, default=17863)
+    parser.add_argument('--workspace', default='alpharch')
+    args = parser.parse_args()
+    try:
+        if args.action == 'list':
+            print('\n'.join(native.action({'action':'catalog'}, args.port)['layouts']))
+        elif args.action in ('save', 'load'):
+            print(native.action({'action':args.action, 'name':args.name}, args.port)['note'])
+        else:
+            native.require_hyprland()
+            existing = native.clients()
+            if existing:
+                native.focus(existing[0])
+            else:
+                print(native.launch_document({'name':'Hyprland desk', 'palette':'pit', 'charts':[]}, args.port, workspace=native.name(args.workspace))['note'])
+    except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        parser.exit(1, 'Hyprland desk: '+str(error)+'\n')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Alpharch Hyprland Desk
+Comment=Independent chart windows with Omarchy tiling and keyboard controls
+Exec=trade-hyprland
+Icon=utilities-terminal
+Terminal=false
+Categories=Office;Finance;
+Keywords=charts;markets;hyprland;omarchy;trading;
+StartupNotify=true

@@ -43,6 +43,10 @@ desk. `alpharch version` should report `1.8.0-alpha.1`.
 bridge needs the official SDK and your signed-in local gateway; it is not
 needed for public crypto charts. [Live desk guide](docs/live-desk-guide.md).
 
+The opening template screen also offers **Classic desk** (charts in one window)
+or **Hyprland desk** (one chart per real tiled window). Both share the chart tools;
+their saved desks stay separate. [Hyprland desk guide](docs/hyprland-desk.md).
+
 Flags: `--no-theme` keeps your current theme, `--no-branding` keeps
 Omarchy's fastfetch logo and screensaver. `--no-keybindings` leaves your existing shortcuts alone.
 

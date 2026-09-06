@@ -37,10 +37,12 @@ for f in "$BINDIR"/*; do
 done
 done_ "commands unlinked"
 
-APP_ENTRY="$HOME/.local/share/applications/alpharch.desktop"
-if [[ -L "$APP_ENTRY" && "$(readlink -m "$APP_ENTRY")" == "$DEST/share/alpharch.desktop" ]]; then
-  rm -f "$APP_ENTRY"
-fi
+for app_name in alpharch alpharch-hyprland; do
+  APP_ENTRY="$HOME/.local/share/applications/$app_name.desktop"
+  if [[ -L "$APP_ENTRY" && "$(readlink -m "$APP_ENTRY")" == "$DEST/share/$app_name.desktop" ]]; then
+    rm -f "$APP_ENTRY"
+  fi
+done
 
 # 3. branding restored
 BRAND="$HOME/.config/omarchy/branding"

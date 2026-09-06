@@ -1,0 +1,16 @@
+#editionChoices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 26px 8px}
+#editionChoices button{display:grid;grid-template-columns:32px 1fr;text-align:left;gap:4px 12px;padding:16px;border:1px solid #3b485b;background:#101a27}
+#editionChoices button[aria-pressed=true]{border-color:var(--accent);background:#222b35;box-shadow:inset 0 0 0 1px var(--accent)}
+#editionChoices strong{font-size:15px;font-weight:600}#editionChoices small{grid-column:2;color:#aebdd0;font-size:12px}
+.edition-mark{grid-row:1/3;align-self:center;font-size:25px;color:var(--accent)}#editionNote{font-size:12px;margin:8px 0 14px}#starterChoices[hidden]{display:none}
+.hyprland-edition header{height:36px;padding:0 7px;gap:5px;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap}
+.native-badge{font:8px ui-monospace;letter-spacing:.14em;color:var(--accent);padding:3px 6px;border:1px solid #5c5544;border-radius:3px}
+.hyprland-edition header .brand{font-size:13px;display:block}.hyprland-edition header .brand span{font-size:15px}.hyprland-edition #deskName,.hyprland-edition header .divider,.hyprland-edition header .specimen{display:none}
+.hyprland-edition header button{font-size:10px;padding:5px 6px}.hyprland-edition #stage{top:36px;left:0;right:0;bottom:22px}
+.hyprland-edition .tile{border:0!important;border-radius:0!important;box-shadow:none!important;min-width:0;min-height:0}
+.hyprland-edition .titlebar{cursor:default}.hyprland-edition .titlebar .grip,.hyprland-edition .resize,.hyprland-edition .resize-edge,.hyprland-edition .resize-hint,.hyprland-edition .maximize,.hyprland-edition .remove{display:none!important}
+.hyprland-edition footer{gap:6px;padding:0 7px}.hyprland-edition footer>span:not(#notice){display:none}.hyprland-edition footer #notice{display:block;margin:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.hyprland-edition #help{display:block}
+.native-help-content{padding:8px 22px 22px;line-height:1.65;color:#bdc9d8}.native-help-content dl{display:grid;grid-template-columns:1fr 1fr;gap:10px}.native-help-content dt{color:var(--accent)}.native-help-content dd{margin:0}
+#nativeHelp{max-width:570px}#nativeSaveDialog{max-width:450px}#nativeSaveStatus{color:var(--accent)}
+.hyprland-edition #sessionBar{top:36px;overflow-x:auto;white-space:nowrap}.hyprland-edition.session-active #stage{top:72px}#nativeReplayStream{max-width:120px}
+@media(max-width:550px){#editionChoices{grid-template-columns:1fr}.hyprland-edition .native-badge{display:none}}
