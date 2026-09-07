@@ -12,7 +12,7 @@ import sys
 import tempfile
 import uuid
 
-ENDPOINT = 'https://alpharch-install-insights.dapper-tang-3900.chatgpt.site/api/v1/install'
+ENDPOINT = 'https://alpharch-install-insights.andrewdudonis284.chatgpt.site/api/v1/install'
 CONSENT_VERSION = 1
 DISCLOSURE = '''Optional installation reports
 Help count completed Alpharch installations. Off by default.
