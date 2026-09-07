@@ -8,6 +8,11 @@ from workstation import module, ROOT
 live=module('live_native', ROOT/'bin/trade-live')
 
 class NativeLiveTests(unittest.TestCase):
+    def test_monitor_query_uses_the_resolved_desktop(self):
+        env={'HYPRLAND_INSTANCE_SIGNATURE':'current','WAYLAND_DISPLAY':'wayland-1'}
+        with patch.object(live,'desktop_env',return_value=env),patch.object(live.subprocess,'check_output',return_value=b'[{"name":"eDP-1"}]') as query:
+            self.assertEqual(live.monitors('monitors'),[{'name':'eDP-1'}])
+            self.assertEqual(query.call_args.kwargs['env'],env)
     def test_window_url_validation(self):
         self.assertIn('asset=BTC',live.window_url('btc',17863,'BTC'))
         for name in ('../bad','x;echo','x\nhello'):

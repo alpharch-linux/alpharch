@@ -4,6 +4,7 @@ const NativeDesk = (() => {
   const enabled = new URLSearchParams(location.hash.slice(1)).get('edition') === 'hyprland';
   let ready = !enabled, counter = 0, selectedEdition = enabled ? 'hyprland' : 'classic';
   const pending = new Map();
+  let availabilityTimer=null;
   function request(action, extra = {}) {
     if (liveSocket?.readyState !== 1) return Promise.reject(Error('The local service is disconnected.'));
     const id = ++counter, data = JSON.stringify({native:{id, action, ...extra}});
@@ -70,11 +71,17 @@ const NativeDesk = (() => {
       for (const b of group.querySelectorAll('button')) b.onclick=()=>{selectedEdition=b.dataset.edition;updateChoice();};
     }
     updateChoice();
+    clearTimeout(availabilityTimer);
     request('catalog').then(result=>{
       const choice=document.querySelector('[data-edition="hyprland"]');
       choice.disabled=!result.available;
-      if(!result.available){choice.querySelector('small').textContent='Requires a running Hyprland desktop';if(!enabled){selectedEdition='classic';updateChoice();}}
-    }).catch(()=>{});
+      choice.querySelector('small').textContent=result.available?'Separate windows · Omarchy tiling':'Waiting for your Hyprland desktop…';
+      if(!result.available){if(!enabled){selectedEdition='classic';updateChoice();}retryAvailability();}
+    }).catch(()=>{retryAvailability();});
+  }
+  function retryAvailability(){
+    clearTimeout(availabilityTimer);
+    if($('starterDialog').open)availabilityTimer=setTimeout(()=>{if($('starterDialog').open)chooser();},3000);
   }
   async function template() {
     $('openStarter').disabled = true;

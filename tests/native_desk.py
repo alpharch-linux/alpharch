@@ -45,6 +45,16 @@ class NativeDeskTests(unittest.TestCase):
             native.action({'action':'open','document':self.doc,'source':'chart-a'},17866)
         self.assertEqual(native.open_window.call_args.args[2],'trading-left')
 
+    def test_window_controls_use_the_recovered_desktop_environment(self):
+        env={'HYPRLAND_INSTANCE_SIGNATURE':'current','WAYLAND_DISPLAY':'wayland-1'}
+        # setUp mocks these operations for layout tests; exercise their originals here.
+        for operation,args in ((native.place,({'address':'0x123'},'9')),
+                               (self.patches[2].temp_original,('9',)),
+                               (native.focus,({'address':'0x123'},))):
+            with patch.object(native.live,'desktop_env',return_value=env),patch.object(native.subprocess,'run') as run:
+                operation(*args)
+                self.assertEqual(run.call_args.kwargs['env'],env)
+
     def test_default_desk_does_not_take_an_occupied_workspace(self):
         with patch.object(native.live,'monitors',side_effect=lambda kind: [{'id':9}] if kind=='workspaces' else []):
             self.assertEqual(native.home_workspace(),'8')

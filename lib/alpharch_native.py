@@ -86,18 +86,18 @@ def place(window, workspace, monitor=None):
     destination = workspace if workspace.isdigit() else 'name:'+workspace
     script = 'source "$1"; hypr_window_to_workspace "$2" "$3"; if [[ -n "$4" ]]; then hypr_workspace_to_monitor "$3" "$4"; fi'
     subprocess.run(['bash', '-c', script, 'alpharch-hyprland', str(ROOT/'lib/alpharch-common.sh'),
-                    window['address'], destination, monitor or ''], check=True, timeout=8)
+                    window['address'], destination, monitor or ''], env=live.desktop_env(), check=True, timeout=8)
 
 
 def visit(workspace):
     destination = workspace if workspace.isdigit() else 'name:'+workspace
     subprocess.run(['bash', '-c', 'source "$1"; hypr_workspace "$2"', 'alpharch-hyprland',
-                    str(ROOT/'lib/alpharch-common.sh'), destination], check=True, timeout=8)
+                    str(ROOT/'lib/alpharch-common.sh'), destination], env=live.desktop_env(), check=True, timeout=8)
 
 
 def focus(window):
     subprocess.run(['bash', '-c', 'source "$1"; hypr_window_focus "$2"', 'alpharch-hyprland',
-                    str(ROOT/'lib/alpharch-common.sh'), window['address']], check=True, timeout=8)
+                    str(ROOT/'lib/alpharch-common.sh'), window['address']], env=live.desktop_env(), check=True, timeout=8)
 
 
 def open_window(key, port, workspace, monitor=None):
@@ -106,7 +106,7 @@ def open_window(key, port, workspace, monitor=None):
     if existing:
         return str(existing['workspace']['name'])
     url = f'http://127.0.0.1:{port}/#'+urlencode({'edition':'hyprland', 'window':key})
-    subprocess.Popen(live.browser_command(url), start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(live.browser_command(url), env=live.desktop_env(), start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         window = next((c for c in clients() if c['title'] == f'Alpharch Hyprland [{key}]'), None)
         if window:
