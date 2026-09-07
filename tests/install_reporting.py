@@ -92,7 +92,7 @@ class ReportingTests(unittest.TestCase):
             self.assertIn('--max-time',args)
             self.assertIn('=https',args)
             self.assertNotIn('--location',args)
-        with patch.object(m.subprocess,'run',side_effect=subprocess.TimeoutExpired('curl',3)):
+        with patch.object(m.subprocess,'run',side_effect=subprocess.TimeoutExpired('curl',6)):
             self.assertFalse(m.transmit(report))
     def test_malformed_version_cannot_send(self):
         with self.assertRaises(ValueError):self.r.finish('secret@example.com','a'*40,False,'on')

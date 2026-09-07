@@ -64,10 +64,10 @@ def transmit(report):
     try:
         result = subprocess.run([
             'curl', '--silent', '--show-error', '--fail', '--proto', '=https',
-            '--connect-timeout', '1', '--max-time', '2', '--max-filesize', '4096',
+            '--connect-timeout', '2', '--max-time', '5', '--max-filesize', '4096',
             '--request', 'POST', '--header', 'Content-Type: application/json',
             '--user-agent', 'Alpharch-install-report/1', '--data-binary', '@-', ENDPOINT,
-        ], input=json.dumps(report), text=True, capture_output=True, timeout=3)
+        ], input=json.dumps(report), text=True, capture_output=True, timeout=6)
         if result.returncode:
             return False
         return json.loads(result.stdout).get('status') in ('accepted', 'duplicate')
