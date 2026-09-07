@@ -299,3 +299,24 @@ MIT. Built on the shoulders of Omarchy, Hyprland, and Arch.
 ---
 
 *Tools, never signals.*
+
+### Optional installation reports
+
+Installation reporting is **off by default**. After a successful install, an
+interactive terminal asks once whether to share a small completion report.
+Non-interactive installs default to off. Your choice persists across updates.
+Use `alpharch install-reports status`, `on`, or `off` to change it. Turning it on
+later applies to future installations and updates; it does not send past reports.
+Turning it off clears any pending reports. No reporting service runs in the background.
+
+The report contains only an event type (install/update/reinstall), app version,
+build revision and a random per-event retry ID. The server records the receipt
+date. No account information, trading data, hardware or persistent device ID is
+included. Hosting providers receive the connection IP; the reporting database
+never stores IP addresses. Details: <https://alpharch.org/privacy.html>.
+
+For unattended setup, append `--install-reports=off` to `install.sh`, or use
+`curl -fsSL https://alpharch.org/install | bash -s -- --install-reports=off`.
+An explicit `--install-reports=on` opts in. Network errors never fail an install.
+Retries keep their ID to prevent double-counting. A maximum of ten pending events
+is retained locally, with at most three attempted during a subsequent install.

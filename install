@@ -5,7 +5,8 @@
 #
 # Installs the Alpharch overlay on a stock Omarchy (or any Arch/Hyprland)
 # system: clones the repo, runs its installer, pulls the one dependency.
-# Reversible: ~/.local/share/alpharch/uninstall.sh removes every trace.
+# Reversible: ~/.local/share/alpharch/uninstall.sh removes the overlay.
+# Personal configuration and local state are preserved.
 
 set -euo pipefail
 
@@ -66,7 +67,7 @@ if command -v pacman >/dev/null 2>&1 && ! python3 -c 'import websockets' 2>/dev/
     || printf '%bcould not install python-websockets — live flow needs it: sudo pacman -S python-websockets%b\n' "$DIM" "$R"
 fi
 
-bash "$SRC/install.sh" < /dev/null
+bash "$SRC/install.sh" "$@" < /dev/null
 
 echo
 printf '%b✓ Alpharch is installed.%b  %bIf a command is "not found", open a new terminal.%b\n' "$UP" "$R" "$DIM" "$R"

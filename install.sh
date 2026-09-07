@@ -12,7 +12,8 @@
 #   ~/.config/hypr/bindings.lua      one marked block, appended
 #   ~/.config/omarchy/themes/pit     The Pit theme
 #   ~/.config/omarchy/branding/      about.txt + screensaver.txt (originals backed up)
-#   ~/.config/alpharch/              your config (created, never overwritten)
+#   ~/.config/alpharch/              config and optional reporting preference
+#   ~/.local/state/alpharch/         local install receipt; pending reports only if enabled
 
 set -euo pipefail
 
@@ -24,8 +25,13 @@ MARK_BEGIN="-- ALPHARCH BEGIN (managed block — do not edit inside; edit ~/.loc
 MARK_END="-- ALPHARCH END"
 
 NO_BRANDING=0; NO_THEME=0; NO_BINDINGS=0
+INSTALL_REPORTS=ask
+EXISTING_INSTALL=0
+[[ ! -f "$DEST/bin/alpharch" ]] || EXISTING_INSTALL=1
 for a in "$@"; do
   case "$a" in
+    --install-reports=on) INSTALL_REPORTS=on ;;
+    --install-reports=off) INSTALL_REPORTS=off ;;
     --no-branding) NO_BRANDING=1 ;;
     --no-theme)    NO_THEME=1 ;;
     --no-keybindings) NO_BINDINGS=1 ;;
@@ -264,3 +270,14 @@ say ""
 say "  If a command says 'not found', open a new terminal."
 echo
 printf '%btools, never signals · est. 2026 · alpharch.org%b\n' "$DIM" "$R"
+
+# Only reached after successful installation. Reporting cannot fail installation.
+if command -v python3 >/dev/null 2>&1; then
+  REPORT_VERSION="$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$DEST/bin/alpharch" | head -1)"
+  REPORT_BUILD="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || sha256sum "$DEST/bin/alpharch")"
+  REPORT_BUILD="${REPORT_BUILD%% *}"
+  python3 "$DEST/lib/alpharch_install_reporting.py" finish \
+    --version "$REPORT_VERSION" --build "$REPORT_BUILD" \
+    --existing "$EXISTING_INSTALL" --choice "$INSTALL_REPORTS" \
+    || say "Optional reporting skipped. Alpharch is installed."
+fi

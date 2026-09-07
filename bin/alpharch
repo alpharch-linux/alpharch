@@ -253,6 +253,7 @@ update_check_quiet() {
 case "${1:-}" in
   doctor)   doctor ;;
   update)   cmd_update ;;
+  install-reports) python3 "$(dirname "$(readlink -f "$0")")/../lib/alpharch_install_reporting.py" "${2:-status}" ;;
   # Plain, not say(): this is a machine-readable datum. publish.sh and
   # `alpharch update` both parse it, and an ANSI reset was landing in the
   # middle of the version string.
