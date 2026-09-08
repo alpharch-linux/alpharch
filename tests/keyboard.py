@@ -5,9 +5,11 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from websockets.legacy.server import serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from alpharch_keyboard import KeyboardHub
+from alpharch_keyboard import KeyboardHub, send
 
 
 class Client:
@@ -70,6 +72,23 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 self.hub.register(Client(), name)
         self.assertEqual(len(self.hub.clients), 2)
+
+    async def test_busy_server_can_finish_handshake_without_losing_shortcut(self):
+        async def handshake(path, headers):
+            await asyncio.sleep(1.2)
+
+        async def handler(ws, path):
+            request = json.loads(await ws.recv())
+            self.assertEqual(request['chartKeys'], {'target': 'chart-one', 'action': 'commands'})
+            await ws.send(json.dumps({'chartKeysResult': {'ok': True, 'note': ''}}))
+
+        async with serve(handler, '127.0.0.1', 0, process_request=handshake) as server:
+            port = server.sockets[0].getsockname()[1]
+            directory = Path(self.tmp.name) / 'slow-server'
+            directory.mkdir()
+            (directory / f'keyboard-{port}.json').write_text(json.dumps({'port': port, 'windows': ['chart-one']}))
+            with patch('alpharch_keyboard.runtime_dir', return_value=directory):
+                self.assertEqual(await send('commands', 'chart-one'), {'ok': True, 'note': ''})
 
 
 if __name__ == '__main__':

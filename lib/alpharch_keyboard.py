@@ -100,7 +100,7 @@ async def send(action, target):
             port = info['port']
             if type(port) is not int or not 1024 <= port <= 65535 or target not in info['windows']:
                 continue
-            async with connect(f'ws://127.0.0.1:{port}/ws', open_timeout=1, max_size=65536) as ws:
+            async with connect(f'ws://127.0.0.1:{port}/ws', open_timeout=5, max_size=65536) as ws:
                 await ws.send(json.dumps({'chartKeys': {'target': target, 'action': action}}))
                 while True:
                     reply = json.loads(await asyncio.wait_for(ws.recv(), 4))
