@@ -44,3 +44,19 @@ o.bind("SUPER + ALT + D", "Focus (do not disturb)", "trade-focus")
 
 -- The shade: flip the whole OS between The Pit and the white prospectus.
 o.bind("SUPER + ALT + I", "Light/dark flip", "trade-shade")
+
+-- Focused chart commands. Existing Omarchy window/workspace keys stay in place.
+-- Search all chart actions with Super+Alt+U; Ctrl+K also works inside the app.
+o.bind("SUPER + ALT + U", "Alpharch chart commands", "trade-chart-key commands")
+o.bind("SUPER + ALT + SHIFT + N", "Alpharch new chart", "trade-chart-key new")
+o.bind("SUPER + ALT + SHIFT + I", "Alpharch indicators", "trade-chart-key indicators")
+o.bind("SUPER + ALT + SHIFT + T", "Alpharch chart interval", "trade-chart-key interval")
+o.bind("SUPER + ALT + SHIFT + D", "Alpharch drawing objects", "trade-chart-key drawings")
+o.bind("SUPER + ALT + SHIFT + P", "Alpharch chart style", "trade-chart-key style")
+o.bind("SUPER + ALT + SHIFT + S", "Alpharch save desk", "trade-chart-key save")
+o.bind("SUPER + ALT + SHIFT + O", "Alpharch saved layouts", "trade-chart-key layouts")
+o.bind("SUPER + ALT + SHIFT + C", "Alpharch connections", "trade-chart-key connections")
+o.bind("SUPER + ALT + SHIFT + R", "Alpharch replay", "trade-chart-key review")
+o.bind("SUPER + ALT + SHIFT + H", "Alpharch chart history", "trade-chart-key history")
+o.bind("SUPER + ALT + SHIFT + L", "Alpharch latest bars", "trade-chart-key live")
+o.bind("SUPER + ALT + SHIFT + Z", "Alpharch fit chart", "trade-chart-key fit")

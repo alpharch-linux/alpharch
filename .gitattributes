@@ -1,0 +1,2 @@
+# Bundled Three.js shaders retain upstream string whitespace; edit the source.
+share/launch-scene.js -whitespace linguist-generated=true

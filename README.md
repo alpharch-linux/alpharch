@@ -53,6 +53,26 @@ Omarchy's fastfetch logo and screensaver. `--no-keybindings` leaves your existin
 ## The Line
 
 Bloomberg taught the world that a terminal is driven, not clicked.
+The chart workspace has its own searchable **Commands** menu: **Super+Alt+U**
+(or **Ctrl+K** inside a chart). Type “new”, “indicators”, “timeframe”, “draw”,
+“style” or “save” and press Enter. The **Keys** button shows the full reference.
+
+With an Alpharch chart focused, **Super+Alt+Shift** plus **N / I / T** opens
+New chart / Indicators / Timeframe; **D / P / S** opens Drawing objects /
+Style / Save desk; **C / R / H** opens Connections / Replay / History;
+**L / Z / O** returns to latest bars / fits the chart / opens saved layouts.
+These shortcuts act only on the focused Alpharch window. Omarchy retains
+its window tiling, focus, resize and workspace shortcuts.
+
+Draw without a mouse: choose a tool through Commands, use **Alt+arrows** to
+move one bar or one native price tick, then **Enter** for each anchor.
+**Alt+Shift+arrows** moves faster. **Ctrl+Z** undoes a drawing. Drawing objects
+lets you enter exact anchor prices and times. **+ / −** zoom the focused
+chart, **Left / Right** pan, and **Home** returns to the latest bars.
+
+Each chart has independent dark, light and saved custom colors under **Style**.
+Following Omarchy changes the window headers; it leaves chart colors as chosen.
+
 `SUPER+ALT+A` opens Alpharch's command bar. Type where you want to go:
 
 ```

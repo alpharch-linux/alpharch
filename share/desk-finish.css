@@ -1,0 +1,95 @@
+/* Alpharch's chart surface. Compact enough for real Hyprland tiles. */
+:root{--text:#e6edf7;--muted:#93a3b8;--edge:#283548;--accent:#e7bd76}
+body{font-family:'Adwaita Sans',Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+header{background:#111923;box-shadow:0 1px 0 #ffffff04;gap:12px}
+header .brand{display:flex;align-items:center;gap:7px;color:#f2eadb;letter-spacing:-.6px}
+header .brand span{display:inline-block;width:25px;height:25px;font-size:0;background:url('/alpharch-mark.svg') center/contain no-repeat;margin:0}
+header .primary{border:1px solid #e8c891;background:#e5ba73;color:#191b20;box-shadow:inset 0 1px #ffe4af}
+header button{border-radius:4px}
+.native-badge{border-color:#548b833d!important;background:#65cfb40a;color:#90cdbf;letter-spacing:.09em}
+.hyprland-edition header .brand{display:flex;font-size:12px;letter-spacing:-.3px}.hyprland-edition header .brand span{width:21px;height:21px}
+.tile{background:#090e17;border-color:#304053;border-radius:6px;box-shadow:0 4px 20px #0005}
+.tile.focused{border-color:#a7b1c466;box-shadow:0 0 0 1px #e9c88614,0 4px 25px #0007}
+.titlebar,.focused .titlebar{background:linear-gradient(180deg,#1a2431,#151e29);box-shadow:inset 0 1px #ffffff06;border-bottom:1px solid #2a3748;gap:4px;padding:0 7px;height:34px}
+.focused .titlebar{background:linear-gradient(180deg,#202c3b,#192330)}
+.titlebar .instrument{font-size:12px;letter-spacing:.025em;font-weight:650;color:#f0f4fa;padding:5px 7px 5px 3px}
+.instrument-picker::after{content:'⌄';color:#8597ad;margin-left:6px;font-size:11px}
+.titlebar select{font-size:10px;background:#0b131d80;border:1px solid #40526b40;border-radius:4px;padding:3px 5px;color:#c6d3e4;height:24px}
+.titlebar .view{max-width:95px}.titlebar .tf{min-width:55px;max-width:84px}
+.titlebar .actions{gap:3px;align-items:center}.titlebar .actions button{width:auto;min-width:24px;height:25px;padding:3px 6px;color:#a6b8d0}
+.titlebar .studies{display:flex;align-items:center;gap:5px}.studies>span:first-child{font-size:15px;color:#bfa4f1}.studies .control-label{font-size:10px;color:#b8c5d6}
+.titlebar .trade-toggle{color:#d6be92;border-left:1px solid #53607450;border-radius:0;padding-left:9px}
+.chart-tools{top:34px;height:31px;padding:0 5px 0 40px;gap:3px;background:#101824;border-color:#263346}
+.chart-tools button{flex-shrink:0;height:25px;padding:4px 6px;color:#8fa2bb;font-size:10px;border-radius:3px}
+.chart-tools button:hover{color:#eef4ff;background:#c4d8f511}
+.chart-tools .fit,.chart-tools .auto-price,.chart-tools .go-live{display:block}
+.chart-tools .auto-price[aria-pressed=true]{color:#96cebd;background:#53caac0b}
+.chart-tools .go-live{color:#a4cabc;white-space:nowrap}
+.chart-tools .chart-icon{width:24px;padding:3px;display:grid;place-items:center}
+.chart-tools svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+.interval-shortcuts{order:-1;flex:1;margin:0 5px 0 0;padding:0;border:0;gap:2px;scrollbar-width:none}
+.interval-shortcuts button{font:10px 'Adwaita Mono','JetBrainsMono Nerd Font',ui-monospace,monospace;color:#94a7bf;padding:4px 6px;min-width:27px}
+.interval-shortcuts button[aria-pressed=true]{color:#f2d5a3;background:#e8b96919;box-shadow:inset 0 -2px #ddb672;border-radius:3px 3px 0 0}
+.chart-more{position:relative;flex-shrink:0}.chart-more summary{list-style:none;padding:4px;width:25px;height:25px;cursor:pointer;color:#a4b4c9;border-radius:3px;display:grid;place-items:center}.chart-more summary::-webkit-details-marker{display:none}.chart-more summary:hover,.chart-more[open] summary{background:#a8c6ee15;color:#f1d29c}
+.chart-more-menu{position:absolute;right:0;top:29px;width:200px;padding:6px;border:1px solid #485b72;border-radius:5px;background:#172230;box-shadow:0 12px 35px #0009;z-index:12}.chart-more-menu button{display:block;width:100%;text-align:left;height:32px;color:#c8d5e6;font-size:11px;padding:8px}
+.chart-tools:has(.chart-more[open]){z-index:10}
+.tile .tile-body{top:65px;left:36px}.drawing-rail,.trade-panel{top:65px}
+.drawing-rail{background:linear-gradient(90deg,#131d2a,#101925);border-color:#2b3b50;padding-top:8px;gap:4px;scrollbar-width:none}
+.drawing-rail .draw-button{color:#a3b5ce;height:28px;min-height:28px;border-radius:5px;padding:5px}.draw-button svg{stroke-width:1.5}
+.drawing-rail .draw-button[aria-pressed=true]{color:#a0e4d0;background:#6bdfba12;border-color:#70dbbc42}
+.drawing-rail .draw-button:hover{color:#f0d8ae;background:#f0c4880f;border-color:#e6c48d2f}
+.drawing-divider{background:#34465d;margin:5px 0}
+.tile-body>.interval-coverage{top:26px;left:12px;color:#9caec3;font-size:9px;line-height:1.5;right:104px}
+.tile .inspect{background:#111c2bf2;border-color:#4e617b;color:#d0dfef;border-radius:4px;box-shadow:0 6px 22px #0006;font:10px/1.75 'Adwaita Mono',ui-monospace,monospace;top:48px}
+.trade-panel{background:#141e2b;border-left-color:#3c5068}.trade-tabs button[aria-selected=true]{color:#f0d49e}
+footer{background:#0e1621;border-color:#243247;color:#8a9bb2}footer #notice{color:#abbcd1}
+dialog{background:#131d2a;border-color:#44566c;border-radius:9px}dialog::backdrop{background:#030811b3;backdrop-filter:blur(8px)}
+.modal-head{background:#192433;border-color:#2f4055}.modal-head h1{font-weight:550;color:#eef1f7;letter-spacing:-.5px}
+.catalog{background:#111c29}.onchart{background:#182637;border-color:#364963}.study-option{padding:13px 2px}.study-glyph{color:#c0a7ef}.study-row.chosen{background:#9cbae812;border-radius:3px}
+.study-option:hover{background:#adcfff05}.categories .selected{color:#dfc698;background:#d9b16a12}
+.empty-feed{background:radial-gradient(ellipse at 50% 40%,#172436,#0b121e 75%)}
+@container(max-width:560px){.studies .control-label{display:none}.titlebar{gap:2px;padding:0 4px}.titlebar .actions{gap:1px}.chart-tools{gap:1px}.chart-tools button{padding-left:4px;padding-right:4px}.interval-shortcuts{margin-right:2px}.interval-shortcuts button{min-width:25px}.chart-tools .chart-icon{width:22px}}
+@container(max-width:380px){.titlebar .view{max-width:67px}.titlebar .instrument{font-size:11px;padding-right:2px}.instrument-picker::after{display:none}.titlebar .actions button{padding-left:3px;padding-right:3px}.chart-tools{padding-left:38px}.interval-shortcuts{min-width:27px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Price and tools share one surface; the compositor owns the outer frame. */
+.titlebar,.focused .titlebar{height:38px;padding:0 10px;border-bottom:0;box-shadow:none}
+.titlebar .instrument{font-size:14px;letter-spacing:-.025em;font-weight:650;padding:6px 7px 6px 1px}
+.titlebar select{border-color:transparent;background:transparent;padding:4px;font-size:10px}
+.titlebar .actions{gap:4px}.titlebar .actions button{height:28px}
+.tile .chart-tools,.themed-chrome .tile .chart-tools{top:38px;height:28px;padding-left:39px;background:var(--chart-background,#0a111c);border-color:color-mix(in srgb,var(--chart-grid,#7893b7) 22%,transparent)}
+.tile .chart-tools button,.themed-chrome .tile .chart-tools button,.themed-chrome .tile .chart-more summary{color:var(--chart-muted,#8fa4bf)}
+.tile .chart-tools button:hover,.themed-chrome .tile .chart-tools button:hover,.tile .chart-more summary:hover{background:color-mix(in srgb,var(--chart-text,#cad7e8) 7%,transparent);color:var(--chart-text,#cad7e8)}
+.tile .interval-shortcuts button{font-family:inherit;font-size:10px;font-weight:500;min-width:28px;border-radius:0}
+.tile .interval-shortcuts button[aria-pressed=true],.themed-chrome .tile .interval-shortcuts button[aria-pressed=true]{background:transparent;box-shadow:inset 0 -2px var(--chart-accent,#d8b77c);color:var(--chart-text,#cad7e8);border:0}
+.tile .chart-tools .auto-price[aria-pressed=true],.themed-chrome .tile .chart-tools .auto-price[aria-pressed=true]{background:color-mix(in srgb,var(--chart-accent,#d8b77c) 10%,transparent);color:var(--chart-accent,#d8b77c);box-shadow:none;border:0}
+.tile .tile-body,.tile .drawing-rail,.tile .trade-panel{top:66px}
+.tile .drawing-rail,.themed-chrome .tile .drawing-rail{padding-top:5px;gap:3px;background:var(--chart-background,#0a111c);border-color:color-mix(in srgb,var(--chart-grid,#7893b7) 20%,transparent)}
+.tile .drawing-rail .draw-button,.themed-chrome .tile .drawing-rail .draw-button{color:var(--chart-muted,#8fa4bf);border-radius:3px;border-color:transparent;box-shadow:none}
+.tile .drawing-rail .draw-button[aria-pressed=true],.themed-chrome .tile .drawing-rail .draw-button[aria-pressed=true]{color:var(--chart-accent,#d8b77c);background:color-mix(in srgb,var(--chart-accent,#d8b77c) 10%,transparent);border-color:color-mix(in srgb,var(--chart-accent,#d8b77c) 24%,transparent);box-shadow:inset 2px 0 var(--chart-accent,#d8b77c)}
+.tile .drawing-rail .draw-button:hover,.themed-chrome .tile .drawing-rail .draw-button:hover{background:color-mix(in srgb,var(--chart-text,#cad7e8) 9%,transparent);color:var(--chart-text,#cad7e8)}
+.tile .drawing-divider,.themed-chrome .tile .drawing-divider{background:color-mix(in srgb,var(--chart-grid,#7893b7) 22%,transparent);margin:3px 0}
+.chart-context{position:absolute;top:0;left:0;right:0;height:25px;padding:3px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;z-index:3;pointer-events:none;color:var(--chart-muted,#8fa4bf)}
+.chart-context .chart-data{pointer-events:auto;display:flex;align-items:center;gap:7px;min-width:0;max-width:calc(100% - 66px);padding:2px 0;height:23px;line-height:19px;text-align:left;font:10px 'Adwaita Sans',system-ui,sans-serif;color:var(--chart-muted,#8fa4bf)}
+.chart-context .chart-data:hover{background:none;color:var(--chart-text,#cad7e8)}
+.chart-data i{width:4px;height:4px;border-radius:50%;flex-shrink:0;background:var(--chart-accent,#d8b77c)}
+.chart-context[data-condition=live] .chart-data i{background:var(--buy,#a2ef75)}
+.chart-context[data-condition=waiting] .data-state,.chart-context[data-condition=replay] .data-state{color:var(--chart-accent,#d8b77c)}
+.data-feed{font-weight:600}.data-state{text-transform:capitalize}.data-coverage{font-size:9px;color:var(--chart-accent,#d8b77c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1px solid color-mix(in srgb,var(--chart-grid,#7893b7) 30%,transparent);padding-left:7px}.data-coverage:empty{display:none}
+.chart-tick{font:9px ui-monospace;white-space:nowrap;opacity:.85}
+.tile .inspect{top:38px;left:10px;padding:7px 9px;border:1px solid color-mix(in srgb,var(--chart-grid,#7893b7) 45%,transparent);font-size:9px;line-height:1.6;box-shadow:0 5px 16px #0002}
+.hyprland-edition header{height:28px;padding:0 8px;background:#111923}
+.hyprland-edition header .brand{font-size:10px;letter-spacing:.03em;gap:5px}.hyprland-edition header .brand span{height:17px;width:20px}.hyprland-edition header .native-badge{font-size:7px;padding:2px 4px;border:0;background:none;opacity:.7}
+.hyprland-edition header button{font-size:9px;padding:3px 6px;min-height:23px}
+.hyprland-edition header .primary{background:transparent;color:#e4c28a;border:1px solid #cfab7138;box-shadow:none}
+.hyprland-edition.themed-chrome header .primary{background:transparent;color:var(--chrome-text);border-color:var(--chrome-edge)}
+.hyprland-edition #stage{top:28px;bottom:18px}.hyprland-edition footer{height:18px;font-size:8px}
+.hyprland-edition #sessionBar{top:28px}.hyprland-edition.session-active #stage{top:64px}
+@container(max-width:500px){.titlebar,.focused .titlebar{padding-left:6px;padding-right:6px}.titlebar .instrument{font-size:13px}.titlebar .actions{gap:1px}.chart-context{padding-left:10px;padding-right:8px;gap:7px}.chart-context .chart-data{font-size:9px;gap:5px}.data-coverage{font-size:8px;padding-left:5px}.chart-tick{font-size:8px}}
+@container(max-width:380px){.titlebar .instrument{font-size:12px}.titlebar .view{max-width:63px}.chart-context .data-coverage{max-width:70px}.chart-context .data-feed{max-width:70px;overflow:hidden;text-overflow:ellipsis}.tile .chart-tools{padding-left:38px}.tile .interval-shortcuts button{min-width:25px}}
+.tile[data-view=tape] .drawing-rail,.tile[data-view=ladder] .drawing-rail,.tile[data-view=tape] .chart-tools,.tile[data-view=ladder] .chart-tools,.tile[data-view=tape] .titlebar .tf,.tile[data-view=ladder] .titlebar .tf,.tile[data-view=tape] .studies,.tile[data-view=ladder] .studies,.tile[data-view=tape] .titlebar .fit{display:none}
+.tile[data-view=tape] .tile-body,.tile[data-view=ladder] .tile-body{top:38px;left:0}
+.tile[data-view=tape] .trade-panel,.tile[data-view=ladder] .trade-panel{top:38px}
+.titlebar .chart-icon svg,.titlebar .chart-more svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+.titlebar:has(.chart-more[open]){position:relative;z-index:10}
+.titlebar .chart-more-menu button{display:block;width:100%;height:32px;text-align:left}

@@ -21,6 +21,8 @@ from alpharch_insights import observations, Options
 from alpharch_broker_session import BrokerSession
 from alpharch_aggregation import event_bars
 from alpharch_timebars import History, time_bars
+from alpharch_omarchy_theme import OmarchyTheme
+from alpharch_keyboard import KeyboardHub
 
 async def main(port):
     from websockets.legacy.server import serve
@@ -29,6 +31,8 @@ async def main(port):
     streams=Streams()
     options=Options()
     history=History()
+    desktop_theme=OmarchyTheme()
+    keyboard=KeyboardHub(port)
     markets, snapshots = streams.markets, {}
     def request(path, headers):
         host = headers.get('Host', '')
@@ -39,11 +43,11 @@ async def main(port):
         if path in ('/', '/index.html'):
             data = page.read_bytes()
             return HTTPStatus.OK, [('Content-Type','text/html; charset=utf-8'),('Content-Length',str(len(data))),('Cache-Control','no-store')], data
-        if path in ('/connections.js', '/sessions.js', '/insights.js', '/broker.js', '/desk-polish.css', '/starters.js', '/starters.css', '/drawing-tools.js', '/drawing-ui.js', '/intervals.js', '/interval-ui.js', '/chart-controls.css', '/chart-grid.js', '/trade-panel.js', '/flow-overlays.js', '/depth-views.js', '/hyprland-desk.js', '/hyprland-desk.css'):
+        if path in ('/connections.js', '/sessions.js', '/insights.js', '/broker.js', '/desk-polish.css', '/starters.js', '/starters.css', '/drawing-tools.js', '/drawing-ui.js', '/intervals.js', '/interval-ui.js', '/chart-controls.css', '/chart-grid.js', '/trade-panel.js', '/flow-overlays.js', '/depth-views.js', '/hyprland-desk.js', '/hyprland-desk.css', '/desk-finish.css', '/desk-surface.js', '/launch-finish.css', '/launch-art.js', '/launch-scene.js', '/alpharch-mark.svg', '/chart-themes.js', '/chart-themes.css', '/theme-ui.js', '/keyboard.js', '/keyboard.css'):
             asset = page.parent / path[1:]
             if not asset.is_file():
                 return HTTPStatus.NOT_FOUND, [], b'Not found'
-            mime = 'application/javascript' if path.endswith('.js') else 'text/css'
+            mime = 'application/javascript' if path.endswith('.js') else 'image/svg+xml' if path.endswith('.svg') else 'text/css'
             return HTTPStatus.OK, [('Content-Type',mime),('Cache-Control','no-store')], asset.read_bytes()
         if path == '/health':
             data = json.dumps({'service':'alpharch-chart-server','version':'1.8.0-alpha.1','readOnly':True,'sources':list(markets)}).encode()
@@ -59,13 +63,35 @@ async def main(port):
         session = Sessions(ChainMap(broker.markets,markets))
         aggregations={}
         aggregate_cache={}
+        theme_enabled=False
+        theme_sent=None
         async def emit_connections(result):
             await ws.send(json.dumps({"connections": result}, allow_nan=False))
         async def receive():
-            nonlocal keys
+            nonlocal keys, theme_enabled, theme_sent
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
+                    if isinstance(msg.get('chartKeys'),dict):
+                        command=msg['chartKeys']
+                        try:
+                            if 'register' in command:
+                                keyboard.register(ws, command['register'])
+                            elif 'ack' in command:
+                                keyboard.acknowledge(ws, command)
+                            else:
+                                result=await keyboard.dispatch(command.get('target'), command.get('action'))
+                                await ws.send(json.dumps({'chartKeysResult':result}))
+                        except ValueError as error:
+                            await ws.send(json.dumps({'chartKeysResult':{'ok':False,'note':str(error)}}))
+                        continue
+                    if isinstance(msg.get('omarchyTheme'),dict):
+                        enabled=msg['omarchyTheme'].get('watch')
+                        if type(enabled) is not bool:
+                            raise ValueError('Invalid theme subscription')
+                        theme_enabled=enabled
+                        theme_sent=None
+                        continue
                     if isinstance(msg.get('aggregations'),list):
                         values=msg['aggregations']
                         if len(values)>8:raise ValueError('Too many aggregation requests')
@@ -163,6 +189,11 @@ async def main(port):
         receiver = asyncio.create_task(receive())
         try:
             while not receiver.done():
+                if theme_enabled:
+                    signature=desktop_theme.signature()
+                    if signature!=theme_sent:
+                        await ws.send(json.dumps({'omarchyTheme':desktop_theme.cached}))
+                        theme_sent=signature
                 if session.error and session.recorders:
                     session.stop()
                     await streams.set(ws,keys if not session.headers else set())
@@ -222,6 +253,7 @@ async def main(port):
         except ConnectionClosed:
             pass
         finally:
+            keyboard.remove(ws)
             receiver.cancel()
             await asyncio.gather(receiver,return_exceptions=True)
             broker.close()

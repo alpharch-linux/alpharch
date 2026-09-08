@@ -1,0 +1,45 @@
+/* The entrance has its own character; the trading surface keeps its space. */
+#starterDialog{width:1160px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #53617066;border-radius:10px;background:#111b28;box-shadow:0 35px 110px #000c}
+.launch-layout{display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.3fr);min-height:670px}
+.launch-identity{position:relative;isolation:isolate;overflow:hidden;padding:32px;display:flex;flex-direction:column;background:radial-gradient(ellipse at 0 45%,#1d53493d,transparent 60%),radial-gradient(ellipse at 100% 55%,#60284745,transparent 60%),linear-gradient(155deg,#19242e,#0a111b 65%);border-right:1px solid #40506366}
+.launch-identity::before{content:'';position:absolute;inset:5% -20% 15% -20%;z-index:-1;background:linear-gradient(155deg,transparent 28%,#54bbbe32 28.2%,#1e424c55 28.4%,#112b3433 59%,#040c1340 59.3%);transform:skewY(-4deg);mask-image:linear-gradient(transparent,black 20%,black 80%,transparent)}
+.launch-identity::after{content:'';position:absolute;left:24%;right:24%;bottom:30%;height:40px;background:#0009;filter:blur(18px);border-radius:50%;z-index:-1}
+.launch-brand{font-size:30px;font-weight:800;letter-spacing:-1.1px;color:#f3ebda;line-height:1}.launch-platform{display:block;font:10px/1.5 'Adwaita Mono',ui-monospace,monospace;color:#8ca4b4;margin-top:10px;letter-spacing:.025em}
+#launchArt{position:relative;width:calc(100% + 56px);margin:8px -28px 0;min-height:275px;flex:1;max-height:360px}
+#launchArt canvas,#launchArt>svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+#launchArt>svg{padding:40px;filter:drop-shadow(-3px 5px 0 #547869) drop-shadow(12px 18px 15px #0007);transform:rotate(-3deg)}
+#launchArt.has-scene>svg{visibility:hidden}
+.launch-copy{margin:auto 0 0;max-width:300px}.launch-copy h2{font-size:31px;font-weight:500;line-height:1.15;letter-spacing:-1px;color:#ede8df;margin:0 0 14px}.launch-copy h2 em{font-style:normal;color:#a6d5c5}
+.launch-copy p{font-size:13px;line-height:1.65;color:#a5b6c7;margin:0}.launch-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:28px;border-top:1px solid #49617150;padding-top:15px;color:#8fabae;font:10px ui-monospace,monospace}
+#launchMotion{font-size:10px;padding:4px 7px;border:1px solid #56726455;color:#a6bdb9;white-space:nowrap}
+.launch-main{min-width:0;display:flex;flex-direction:column;background:linear-gradient(150deg,#1b2836,#111b28 70%)}
+#starterDialog .modal-head{padding:28px 28px 12px;background:none;border:0;align-items:flex-start}#starterDialog .eyebrow{font:10px 'Adwaita Mono',ui-monospace,monospace;letter-spacing:.1em;color:#a8b8ca}
+#starterDialog .modal-head h1{font-size:29px;font-weight:550;letter-spacing:-.8px;margin:7px 0 0;line-height:1.15}#starterDialog .close{border:1px solid #71849a40;border-radius:50%;height:29px;width:29px;padding:0;line-height:24px;font-size:18px}
+#starterIntro{padding:0 28px;margin:0 0 8px;font-size:12px;line-height:1.6;color:#a8b9cc}
+#starterDialog #editionChoices{gap:8px;margin:10px 28px 0}#editionChoices button{padding:12px;grid-template-columns:23px 1fr;gap:4px 9px;border-radius:5px;background:#0d1722;box-shadow:none}
+#editionChoices button[aria-pressed=true]{background:#293738;border-color:#b5c3a37a;box-shadow:inset 0 0 0 1px #d7ce9822}#editionChoices button:hover:enabled{border-color:#a1bbce}
+#editionChoices strong{font-size:12px}#editionChoices small{font-size:10px;line-height:1.5;color:#a4b9c9}.edition-mark{font-size:22px;color:#a4d6c5}
+#starterDialog #editionNote{font-size:10px;line-height:1.6;padding:0 28px;margin:10px 0 14px;min-height:32px;color:#97aebf}
+#starterDialog .starter-choices{display:flex;flex-direction:column;gap:7px;padding:0 28px 20px}
+#starterDialog .starter-choice{position:relative;display:grid;grid-template-columns:78px 1fr;gap:3px 13px;padding:11px 13px;border:1px solid #3c506063;background:#0d172288;border-radius:5px;box-shadow:none}
+#starterDialog .starter-choice:hover{background:#26364a66;border-color:#718ba399}
+#starterDialog .starter-choice[aria-pressed=true]{background:#28342e88;border-color:#b8c19b8c;box-shadow:inset 3px 0 #c8ca9c}
+#starterDialog .starter-choice[aria-pressed=true]::after{content:'✓';position:absolute;right:13px;top:11px;color:#cbd3b0;font-size:11px}
+#starterDialog .starter-tag{display:none}#starterDialog .starter-map{grid-column:1;grid-row:1/4;height:60px;align-self:center;border:1px solid #47607566;border-radius:3px;background:#08111c;overflow:hidden}
+#starterDialog .starter-map span{font-size:0;background:linear-gradient(165deg,#396f6560,#142a35);border:1px solid #90b1aa44;padding:0;box-shadow:none}
+#starterDialog .starter-map span[data-view=heat]{background:repeating-linear-gradient(0deg,#e6b17835 0 2px,transparent 2px 7px),#392943}
+#starterDialog .starter-map span[data-view=tape]{background:repeating-linear-gradient(0deg,#69dcbb33 0 1px,transparent 1px 5px),#152f30}
+#starterDialog .starter-map span[data-view=candles]::before{content:'';position:absolute;inset:16% 8%;background:#84ddba80;clip-path:polygon(0 72%,15% 54%,29% 64%,44% 29%,59% 44%,75% 15%,100% 31%,100% 35%,75% 19%,59% 48%,44% 33%,29% 68%,15% 58%,0 76%)}
+#starterDialog .starter-choice strong{grid-column:2;font-size:13px;letter-spacing:0;font-weight:600;margin:0 15px 2px 0;color:#e6ecf4}
+#starterDialog .starter-choice p{grid-column:2;font-size:11px;line-height:1.45;color:#a2b5c9;margin:0}#starterDialog .starter-choice small{grid-column:2;font-size:9px;line-height:1.4;color:#88a0b8;margin-top:2px}
+#starterDialog .starter-choice[data-starter=blank]{min-height:48px;grid-template-columns:78px 1fr}
+#starterDialog .starter-choice[data-starter=blank]::before{content:'＋';grid-column:1;grid-row:1/3;align-self:center;justify-self:center;font-size:24px;font-weight:300;color:#73968b}
+#starterDialog .starter-footer{margin-top:auto;padding:16px 28px 22px;border-color:#42526766;background:#111b27;display:block;position:sticky;bottom:0;z-index:2}
+#starterDialog .starter-footer p{font-size:10px;line-height:1.55;color:#96a9bf;max-width:none;margin:0 0 14px}
+#starterDialog .starter-actions{gap:8px;justify-content:stretch}#starterDialog .starter-actions button{min-height:39px;padding:9px 12px;font-size:12px;flex:1}
+#starterDialog .starter-actions .primary{background:linear-gradient(#f0d094,#d7ab65);border:1px solid #f1d3a2;color:#24231d;box-shadow:inset 0 1px #ffe7be;letter-spacing:.01em}
+#starterDialog .starter-actions .primary:hover{filter:brightness(1.08)}#starterDialog #resumeStarter{border:1px solid #55697e;color:#bdcbdc;flex:.8}
+#starterDialog #starterStatus{padding:0 28px;font-size:11px;margin-top:0}
+@media(max-width:900px){.launch-layout{grid-template-columns:minmax(235px,.7fr) minmax(0,1.3fr)}.launch-identity{padding:25px}.launch-copy h2{font-size:27px}#starterDialog .modal-head{padding-left:23px;padding-right:23px}#starterDialog #editionChoices{margin-left:23px;margin-right:23px}#starterDialog .starter-choices{padding-left:23px;padding-right:23px}.launch-brand{font-size:26px}}
+@media(max-width:700px){#starterDialog{max-width:calc(100vw - 20px);max-height:calc(100dvh - 20px)}.launch-layout{display:block;min-height:0}.launch-identity{padding:20px 23px;border-right:0;border-bottom:1px solid #3f556655;min-height:138px;justify-content:center}.launch-brand{font-size:25px}.launch-platform{max-width:170px;font-size:9px}#launchArt{position:absolute;right:8px;top:0;margin:0;width:165px;height:130px;min-height:0}#launchArt>svg{padding:20px}.launch-copy{display:none}.launch-bottom{margin-top:12px;border:0;padding:0;font-size:9px;justify-content:flex-start;gap:14px}.launch-main{display:block}#starterDialog .modal-head{padding-top:20px}#starterDialog .modal-head h1{font-size:25px}#starterDialog #editionChoices{grid-template-columns:1fr 1fr}#starterDialog .starter-actions button{flex:1 1 140px}#starterDialog .starter-choice small{font-size:9px}#starterDialog .starter-choice p{font-size:11px}}
+@media(max-width:430px){#starterDialog #editionChoices{grid-template-columns:1fr}#editionChoices button{padding:9px;grid-template-columns:20px 1fr;gap:2px 8px}#editionChoices small{font-size:10px}#starterDialog .starter-choice{grid-template-columns:56px 1fr;gap:3px 10px;padding:10px}#starterDialog .starter-map{height:50px}#starterDialog .starter-choice[data-starter=blank]{grid-template-columns:56px 1fr}#starterDialog .starter-choice small{display:none}.launch-brand{font-size:24px}#launchArt{width:135px;right:0}.launch-platform{max-width:140px}.launch-bottom>span{display:none}}

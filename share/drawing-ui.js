@@ -66,5 +66,23 @@ function objects(c){
 }
 function editHit(c,e,r){if(c.tool&&c.tool!=='cursor')return true;const d=[...(c.drawings||[])].reverse().find(d=>DrawingTools.hit(d,env(c,r),{x:e.offsetX,y:e.offsetY}));if(!d||c.drawingsHidden)return false;chosen.set(c,d);objects(c);return true}
 function init(){document.addEventListener('pointerdown',e=>{if(flyout&&!e.target.closest('.drawing-flyout,.drawing-rail'))close()});document.addEventListener('keydown',e=>{if(e.key==='Escape'){close();for(const c of state.charts){pending.delete(c);refresh(c);draw(c)}}});window.addEventListener('resize',close)}
-root.DrawingUI={mount,refresh,choose,click,drag,paint,objects,editHit,init};
+function keyboardMove(c,mouse,r){
+ if(!['brush','highlighter'].includes(c.tool)||!pending.has(c))return;
+ const points=pending.get(c),p=point(c,{offsetX:mouse.x,offsetY:mouse.y},r);
+ if(points.length<128&&(!points.length||points.at(-1).t!==p.t||points.at(-1).p!==p.p))points.push(p);
+}
+function keyboardEnter(c,mouse,r){
+ if(!r)return;
+ if((c.drawings||[]).length>=50)throw Error('50 drawings on this chart · remove an object before adding another.');
+ if(c.drawingsHidden){c.drawingsHidden=false;refresh(c);}
+ const e={offsetX:mouse.x,offsetY:mouse.y};
+ if(['brush','highlighter'].includes(c.tool)){
+  const points=pending.get(c);
+  if(!points){pending.set(c,[point(c,e,r)]);notify('Alt+arrows draw the path · Enter finishes · Escape cancels.');}
+  else if(points.length<2)notify('Move the cursor before finishing the path.');
+  else commit(c,{type:c.tool,text:'',points:[...points],style:prefs(c)});
+ }else click(c,e,r);
+ draw(c);
+}
+root.DrawingUI={keyboardMove,keyboardEnter,mount,refresh,choose,click,drag,paint,objects,editHit,init};
 })(globalThis);

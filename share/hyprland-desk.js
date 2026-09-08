@@ -89,7 +89,7 @@ const NativeDesk = (() => {
       const result = selectedEdition === 'classic'
         ? await request('classic')
         : await open({...cleanState(), ...AlpharchStarters.layout(chosenStarter,makeChart,study,stage.clientWidth,stage.clientHeight)});
-      $('starterStatus').textContent=result.note;
+      $('starterStatus').textContent=result.note;window.dispatchEvent(new Event('alpharch:desk-opened'));
       // Keep the Classic desk and its opening chooser intact. It remains the
       // easy way back while the compositor switches to the separate workspace.
       notify(result.note);
@@ -156,5 +156,5 @@ const NativeDesk = (() => {
     notify('This window shows one replay stream. Choose another in the replay bar. Other windows keep their own sessions.');
     return [charts[0]];
   }
-  return {enabled,get ready(){return ready;},get interceptTemplate(){return enabled||selectedEdition==='hyprland';},receive,disconnected,connected,save,open,add,chooser,updateChoice,template,mount,replayCharts};
+  return {enabled,get ready(){return ready;},get interceptTemplate(){return enabled||selectedEdition==='hyprland';},receive,disconnected,connected,save,open,add,chooser,updateChoice,template,mount,replayCharts,openSave,menu};
 })();
