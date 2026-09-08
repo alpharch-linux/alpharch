@@ -62,7 +62,9 @@ New chart / Indicators / Timeframe; **D / P / S** opens Drawing objects /
 Style / Save desk; **C / R / H** opens Connections / Replay / History;
 **L / Z / O** returns to latest bars / fits the chart / opens saved layouts.
 These shortcuts act only on the focused Alpharch window. Omarchy retains
-its window tiling, focus, resize and workspace shortcuts.
+its window tiling, focus, resize and workspace shortcuts. On the standard
+keyboard layout, **Super+− / =** resizes width, **Super+Shift+− / =** resizes
+height, and **Super+F** toggles full screen.
 
 Draw without a mouse: choose a tool through Commands, use **Alt+arrows** to
 move one bar or one native price tick, then **Enter** for each anchor.
